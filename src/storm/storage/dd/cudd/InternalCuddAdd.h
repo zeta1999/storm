@@ -6,6 +6,8 @@
 #include <functional>
 #include <memory>
 
+#include "storm/adapters/RationalNumberAdapter.h"
+
 #include "storm/storage/dd/DdType.h"
 #include "storm/storage/dd/InternalAdd.h"
 #include "storm/storage/dd/Odd.h"
@@ -38,11 +40,18 @@ namespace storm {
         
         template<DdType LibraryType, typename ValueType>
         class AddIterator;
+
+        namespace bisimulation {
+            template<DdType LibraryType, typename ValueType>
+            class InternalSignatureRefiner;
+        }
         
         template<typename ValueType>
         class InternalAdd<DdType::CUDD, ValueType> {
         public:
             friend class InternalBdd<DdType::CUDD>;
+            
+            friend class bisimulation::InternalSignatureRefiner<DdType::CUDD, ValueType>;
             
             /*!
              * Creates an ADD that encapsulates the given CUDD ADD.
@@ -58,7 +67,8 @@ namespace storm {
             InternalAdd& operator=(InternalAdd<DdType::CUDD, ValueType> const& other) = default;
             InternalAdd(InternalAdd<DdType::CUDD, ValueType>&& other) = default;
             InternalAdd& operator=(InternalAdd<DdType::CUDD, ValueType>&& other) = default;
-            
+            virtual ~InternalAdd() = default;
+
             /*!
              * Retrieves whether the two DDs represent the same function.
              *
@@ -231,6 +241,13 @@ namespace storm {
             InternalAdd<DdType::CUDD, ValueType> ceil() const;
             
             /*!
+             * Retrieves the function that sharpens all values in the current ADD with the Kwek-Mehlhorn algorithm.
+             *
+             * @return The resulting ADD.
+             */
+            InternalAdd<DdType::CUDD, storm::RationalNumber> sharpenKwekMehlhorn(size_t precision) const;
+            
+            /*!
              * Retrieves the function that maps all evaluations to the minimum of the function values of the two ADDs.
              *
              * @param other The ADD with which to perform the operation.
@@ -246,6 +263,16 @@ namespace storm {
              */
             InternalAdd<DdType::CUDD, ValueType> maximum(InternalAdd<DdType::CUDD, ValueType> const& other) const;
             
+            /*!
+             * Replaces the leaves in this MTBDD with the converted values in the target value type.
+             *
+             * @return The resulting function represented as an ADD.
+             */
+            template<typename TargetValueType>
+            typename std::enable_if<std::is_same<ValueType, TargetValueType>::value, InternalAdd<DdType::CUDD, TargetValueType>>::type toValueType() const;
+            template<typename TargetValueType>
+            typename std::enable_if<!std::is_same<ValueType, TargetValueType>::value, InternalAdd<DdType::CUDD, TargetValueType>>::type toValueType() const;
+
             /*!
              * Sum-abstracts from the given cube.
              *
@@ -321,7 +348,17 @@ namespace storm {
              * @return An ADD representing the result of the matrix-matrix multiplication.
              */
             InternalAdd<DdType::CUDD, ValueType> multiplyMatrix(InternalAdd<DdType::CUDD, ValueType> const& otherMatrix, std::vector<InternalBdd<DdType::CUDD>> const& summationDdVariables) const;
-            
+
+            /*!
+             * Multiplies the current ADD (representing a matrix) with the given matrix by summing over the given meta
+             * variables.
+             *
+             * @param otherMatrix The matrix with which to multiply.
+             * @param summationDdVariables The DD variables (represented as ADDs) over which to sum.
+             * @return An ADD representing the result of the matrix-matrix multiplication.
+             */
+            InternalAdd<DdType::CUDD, ValueType> multiplyMatrix(InternalBdd<DdType::CUDD> const& otherMatrix, std::vector<InternalBdd<DdType::CUDD>> const& summationDdVariables) const;
+
             /*!
              * Computes a BDD that represents the function in which all assignments with a function value strictly
              * larger than the given value are mapped to one and all others to zero.
@@ -477,7 +514,7 @@ namespace storm {
              * @param filename The name of the file to which the DD is to be exported.
              * @param ddVariableNamesAsString The names of the DD variables to display in the dot file.
              */
-            void exportToDot(std::string const& filename, std::vector<std::string> const& ddVariableNamesAsStrings) const;
+            void exportToDot(std::string const& filename, std::vector<std::string> const& ddVariableNamesAsStrings, bool showVariablesIfPossible = true) const;
             
             /*!
              * Retrieves an iterator that points to the first meta variable assignment with a non-zero function value.
@@ -576,7 +613,8 @@ namespace storm {
              */
             Odd createOdd(std::vector<uint_fast64_t> const& ddVariableIndices) const;
             
-        private:
+            InternalDdManager<DdType::CUDD> const& getInternalDdManager() const;
+            
             /*!
              * Retrieves the CUDD ADD object associated with this ADD.
              *
@@ -591,6 +629,12 @@ namespace storm {
              */
             DdNode* getCuddDdNode() const;
             
+            /*!
+             * Retrieves a string representation of an ID for thid ADD.
+             */
+            std::string getStringId() const;
+            
+        private:
             /*!
              * Performs a recursive step to perform the given function between the given DD-based vector and the given
              * explicit vector.

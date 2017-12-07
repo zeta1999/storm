@@ -30,6 +30,25 @@ namespace storm {
                 actionIndices.emplace("", 0);
             }
             
+            void moveToSecondRun() {
+                // Clear all data except the action to indices mapping.
+                modelType = storm::prism::Program::ModelType::UNDEFINED;
+                constants.clear();
+                formulas.clear();
+                globalBooleanVariables.clear();
+                globalIntegerVariables.clear();
+                moduleToIndexMap.clear();
+                modules.clear();
+                rewardModels.clear();
+                labels.clear();
+                hasInitialConstruct = false;
+                initialConstruct = storm::prism::InitialConstruct();
+                systemCompositionConstruct = boost::none;
+                
+                currentCommandIndex = 0;
+                currentUpdateIndex = 0;
+            }
+            
             // Members for all essential information that needs to be collected.
             storm::prism::Program::ModelType modelType;
             std::vector<storm::prism::Constant> constants;
@@ -50,7 +69,7 @@ namespace storm {
             uint_fast64_t currentUpdateIndex;
         };
 
-        class PrismParser : public qi::grammar<Iterator, storm::prism::Program(), qi::locals<GlobalProgramInformation>, Skipper> {
+        class PrismParser : public qi::grammar<Iterator, storm::prism::Program(), Skipper> {
         public:
             /*!
              * Parses the given file into the PRISM storage classes assuming it complies with the PRISM syntax.
@@ -58,7 +77,7 @@ namespace storm {
              * @param filename the name of the file to parse.
              * @return The resulting PRISM program.
              */
-            static storm::prism::Program parse(std::string const& filename);
+            static storm::prism::Program parse(std::string const& filename, bool prismCompatability = false);
             
             /*!
              * Parses the given input stream into the PRISM storage classes assuming it complies with the PRISM syntax.
@@ -67,7 +86,7 @@ namespace storm {
              * @param filename The name of the file from which the input was read.
              * @return The resulting PRISM program.
              */
-            static storm::prism::Program parseFromString(std::string const& input, std::string const& filename);
+            static storm::prism::Program parseFromString(std::string const& input, std::string const& filename, bool prismCompatability = false);
             
         private:
             struct modelTypeStruct : qi::symbols<char, storm::prism::Program::ModelType> {
@@ -131,7 +150,7 @@ namespace storm {
              * @param filename The filename that is to be read. This is used for proper error reporting.
              * @param first The iterator to the beginning of the input.
              */
-            PrismParser(std::string const& filename, Iterator first);
+            PrismParser(std::string const& filename, Iterator first, bool prismCompatibility);
             
             /*!
              * Sets an internal flag that indicates the second run is now taking place.
@@ -140,6 +159,8 @@ namespace storm {
             
             // A flag that stores whether the grammar is currently doing the second run.
             bool secondRun;
+
+            bool prismCompatibility;
             
             /*!
              * Sets whether doubles literals are allowed in the parsed expression.
@@ -161,8 +182,11 @@ namespace storm {
             // A function used for annotating the entities with their position.
             phoenix::function<PositionAnnotation> annotate;
             
+            // An object gathering information about the program while parsing.
+            GlobalProgramInformation globalProgramInformation;
+            
             // The starting point of the grammar.
-            qi::rule<Iterator, storm::prism::Program(), qi::locals<GlobalProgramInformation>, Skipper> start;
+            qi::rule<Iterator, storm::prism::Program(), Skipper> start;
             
             // Rules for model type.
             qi::rule<Iterator, storm::prism::Program::ModelType(), Skipper> modelTypeDefinition;

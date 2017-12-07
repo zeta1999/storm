@@ -1,6 +1,9 @@
-#include <sylvan_mtbdd_int.h>
+#include <stdint.h>
+#include <math.h>
+#include "sylvan_int.h"
 
 #include "storm_wrapper.h"
+#include "sylvan_mtbdd_storm.h"
 
 // Import the types created for rational numbers and functions.
 extern uint32_t srn_type;
@@ -554,11 +557,6 @@ int mtbdd_isnonzero(MTBDD dd) {
     return mtbdd_iszero(dd) ? 0 : 1;
 }
 
-MTBDD
-mtbdd_ithvar(uint32_t level) {
-    return mtbdd_makenode(level, mtbdd_false, mtbdd_true);
-}
-
 TASK_IMPL_2(MTBDD, mtbdd_op_complement, MTBDD, a, size_t, k)
 {
     // if a is false, then it is a partial function. Keep partial!
@@ -592,6 +590,72 @@ TASK_IMPL_2(MTBDD, mtbdd_op_complement, MTBDD, a, size_t, k)
     (void)k; // unused variable
 }
 
+#include "sylvan_storm_rational_number.h"
+
+TASK_IMPL_2(MTBDD, mtbdd_op_sharpen, MTBDD, a, size_t, p)
+{
+    /* We only expect double or rational number terminals, or false */
+    if (a == mtbdd_false) return mtbdd_false;
+    if (a == mtbdd_true) return mtbdd_true;
+    
+    // a != constant
+    mtbddnode_t na = MTBDD_GETNODE(a);
+    
+    if (mtbddnode_isleaf(na)) {
+        if (mtbddnode_gettype(na) == 1) {
+            storm_rational_number_ptr rnp = storm_double_sharpen(mtbdd_getdouble(a), p);
+            
+            // If the sharpening failed, we return mtbdd_false so this can be detected at the top level.
+            if (rnp == (storm_rational_number_ptr)0) {
+                return mtbdd_false;
+            }
+            MTBDD result = mtbdd_storm_rational_number(rnp);
+            return result;
+        } else if (mtbddnode_gettype(na) == srn_type) {
+            return mtbdd_storm_rational_number(storm_rational_number_sharpen((storm_rational_number_ptr)mtbdd_getstorm_rational_number_ptr(a), p));
+        } else {
+            printf("ERROR: Unsupported value type in sharpen.\n");
+            assert(0);
+        }
+    }
+    
+    return mtbdd_invalid;
+}
+
+TASK_IMPL_2(MTBDD, mtbdd_sharpen, MTBDD, dd, size_t, p)
+{
+    return mtbdd_uapply_fail_false(dd, TASK(mtbdd_op_sharpen), p);
+}
+
+TASK_IMPL_2(MTBDD, mtbdd_op_to_rational_number, MTBDD, a, size_t, p)
+{
+    /* We only expect double or rational number terminals, or false */
+    if (a == mtbdd_false) return mtbdd_false;
+    if (a == mtbdd_true) return mtbdd_true;
+    
+    // a != constant
+    mtbddnode_t na = MTBDD_GETNODE(a);
+    
+    if (mtbddnode_isleaf(na)) {
+        if (mtbddnode_gettype(na) == 1) {
+            MTBDD result = mtbdd_storm_rational_number(storm_rational_number_from_double(mtbdd_getdouble(a)));
+            return result;
+        } else {
+            printf("ERROR: Unsupported value type in conversion to rational number.\n");
+            assert(0);
+        }
+    }
+
+    return mtbdd_invalid;
+    (void)p; // unused variable
+}
+
+TASK_IMPL_2(MTBDD, mtbdd_to_rational_number, MTBDD, dd, size_t, p)
+{
+    return mtbdd_uapply(dd, TASK(mtbdd_op_to_rational_number), 0);
+}
+
+
 TASK_IMPL_3(BDD, mtbdd_min_abstract_representative, MTBDD, a, BDD, v, BDDVAR, prev_level) {
 	/* Maybe perform garbage collection */
     sylvan_gc_test();
@@ -618,11 +682,18 @@ TASK_IMPL_3(BDD, mtbdd_min_abstract_representative, MTBDD, a, BDD, v, BDDVAR, pr
 		return res1;
     }
 	
+    /* Check cache */
+    MTBDD result;
+    if (cache_get3(CACHE_MTBDD_ABSTRACT_REPRESENTATIVE, a, v, (size_t)1, &result)) {
+        sylvan_stats_count(MTBDD_ABSTRACT_CACHED);
+        return result;
+    }
+    
 	mtbddnode_t na = MTBDD_GETNODE(a);
 	uint32_t va = mtbddnode_getvariable(na);
 	bddnode_t nv = MTBDD_GETNODE(v);
 	BDDVAR vv = bddnode_getvariable(nv);
-
+    
     /* Abstract a variable that does not appear in a. */
     if (va > vv) {
 		BDD _v = sylvan_set_next(v);
@@ -640,13 +711,6 @@ TASK_IMPL_3(BDD, mtbdd_min_abstract_representative, MTBDD, a, BDD, v, BDDVAR, pr
         }
         sylvan_deref(res);
        	return res1;
-    }
-    
-    /* Check cache */
-    MTBDD result;
-    if (cache_get3(CACHE_MTBDD_ABSTRACT_REPRESENTATIVE, a, v, (size_t)1, &result)) {
-        sylvan_stats_count(MTBDD_ABSTRACT_CACHED);
-        return result;
     }
     
     MTBDD E = mtbdd_getlow(a);
@@ -798,12 +862,19 @@ TASK_IMPL_3(BDD, mtbdd_max_abstract_representative, MTBDD, a, MTBDD, v, uint32_t
         
 		return res1;
     }
-	
+
+    /* Check cache */
+    MTBDD result;
+    if (cache_get3(CACHE_MTBDD_ABSTRACT_REPRESENTATIVE, a, v, (size_t)0, &result)) {
+        sylvan_stats_count(MTBDD_ABSTRACT_CACHED);
+        return result;
+    }
+
 	mtbddnode_t na = MTBDD_GETNODE(a);
 	uint32_t va = mtbddnode_getvariable(na);
 	bddnode_t nv = MTBDD_GETNODE(v);
 	BDDVAR vv = bddnode_getvariable(nv);
-
+    
     /* Abstract a variable that does not appear in a. */
     if (vv < va) {
 		BDD _v = sylvan_set_next(v);
@@ -821,13 +892,6 @@ TASK_IMPL_3(BDD, mtbdd_max_abstract_representative, MTBDD, a, MTBDD, v, uint32_t
         }
         sylvan_deref(res);
        	return res1;
-    }
-    
-    /* Check cache */
-    MTBDD result;
-    if (cache_get3(CACHE_MTBDD_ABSTRACT_REPRESENTATIVE, a, v, (size_t)0, &result)) {
-        sylvan_stats_count(MTBDD_ABSTRACT_CACHED);
-        return result;
     }
     
     MTBDD E = mtbdd_getlow(a);

@@ -14,17 +14,17 @@
 namespace storm {
     namespace models {
         namespace sparse {
-            
+
             template <typename ValueType, typename RewardModelType>
             Model<ValueType, RewardModelType>::Model(ModelType modelType, storm::storage::sparse::ModelComponents<ValueType, RewardModelType> const& components)
-                    : ModelBase(modelType), transitionMatrix(components.transitionMatrix), stateLabeling(components.stateLabeling), rewardModels(components.rewardModels),
+            : storm::models::Model<ValueType>(modelType), transitionMatrix(components.transitionMatrix), stateLabeling(components.stateLabeling), rewardModels(components.rewardModels),
                       choiceLabeling(components.choiceLabeling), stateValuations(components.stateValuations), choiceOrigins(components.choiceOrigins) {
                 assertValidityOfComponents(components);
             }
             
             template <typename ValueType, typename RewardModelType>
             Model<ValueType, RewardModelType>::Model(ModelType modelType, storm::storage::sparse::ModelComponents<ValueType, RewardModelType>&& components)
-                    : ModelBase(modelType), transitionMatrix(std::move(components.transitionMatrix)), stateLabeling(std::move(components.stateLabeling)), rewardModels(std::move(components.rewardModels)),
+            : storm::models::Model<ValueType>(modelType), transitionMatrix(std::move(components.transitionMatrix)), stateLabeling(std::move(components.stateLabeling)), rewardModels(std::move(components.rewardModels)),
                       choiceLabeling(std::move(components.choiceLabeling)), stateValuations(std::move(components.stateValuations)), choiceOrigins(std::move(components.choiceOrigins)) {
                 assertValidityOfComponents(components);
             }
@@ -154,7 +154,7 @@ namespace storm {
 
             template<typename ValueType, typename RewardModelType>
             void Model<ValueType, RewardModelType>::addRewardModel(std::string const& rewardModelName, RewardModelType const& newRewardModel) {
-                if(this->hasRewardModel(rewardModelName)) {
+                if (this->hasRewardModel(rewardModelName)) {
                     STORM_LOG_THROW(!(this->hasRewardModel(rewardModelName)), storm::exceptions::IllegalArgumentException, "A reward model with the given name '" << rewardModelName << "' already exists.");
                 }
                 STORM_LOG_ASSERT(newRewardModel.isCompatible(this->getNumberOfStates(), this->getTransitionMatrix().getRowCount()), "New reward model is not compatible.");
@@ -165,15 +165,34 @@ namespace storm {
             bool Model<ValueType, RewardModelType>::removeRewardModel(std::string const& rewardModelName) {
                 auto it = this->rewardModels.find(rewardModelName);
                 bool res = (it != this->rewardModels.end());
-                if(res) {
+                if (res) {
                     this->rewardModels.erase(it->first);
                 }
                 return res;
             }
             
             template<typename ValueType, typename RewardModelType>
+            void Model<ValueType, RewardModelType>::restrictRewardModels(std::set<std::string> const& keptRewardModels) {
+                std::set<std::string> removedRewardModels;
+                for (auto const& rewModel : this->getRewardModels()) {
+                    if (keptRewardModels.find(rewModel.first) == keptRewardModels.end()) {
+                        removedRewardModels.insert(rewModel.first);
+                    }
+                }
+                for (auto const& rewModelName : removedRewardModels) {
+                    this->removeRewardModel(rewModelName);
+                }
+            }
+            
+            template<typename ValueType, typename RewardModelType>
             bool Model<ValueType, RewardModelType>::hasUniqueRewardModel() const {
                 return this->getNumberOfRewardModels() == 1;
+            }
+            
+            template<typename ValueType, typename RewardModelType>
+            std::string const& Model<ValueType, RewardModelType>::getUniqueRewardModelName() const {
+                STORM_LOG_THROW(this->getNumberOfRewardModels() == 1, storm::exceptions::IllegalFunctionCallException, "The reward model is not unique.");
+                return this->rewardModels.begin()->first;
             }
             
             template<typename ValueType, typename RewardModelType>
@@ -317,12 +336,16 @@ namespace storm {
                 for (uint_fast64_t state = 0, highestStateIndex = this->getNumberOfStates() - 1; state <= highestStateIndex; ++state) {
                     if (subsystem == nullptr || subsystem->get(state)) {
                         outStream << "\t" << state;
-                        if (includeLabeling || firstValue != nullptr || secondValue != nullptr || stateColoring != nullptr) {
+                        if (includeLabeling || firstValue != nullptr || secondValue != nullptr || stateColoring != nullptr || hasStateValuations()) {
                             outStream << " [ ";
                             
                             // If we need to print some extra information, do so now.
-                            if (includeLabeling || firstValue != nullptr || secondValue != nullptr) {
-                                outStream << "label = \"" << state << ": ";
+                            if (includeLabeling || firstValue != nullptr || secondValue != nullptr || hasStateValuations()) {
+                                outStream << "label = \"" << state;
+                                if (hasStateValuations()) {
+                                    outStream << " " << getStateValuations().getStateInfo(state);
+                                }
+                                outStream << ": ";
                                 
                                 // Now print the state labeling to the stream if requested.
                                 if (includeLabeling) {

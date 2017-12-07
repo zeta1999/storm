@@ -6,7 +6,8 @@
 
 #include "storm/settings/SettingsManager.h"
 #include "storm/api/storm.h"
-#include "storm/cli/cli.h"
+#include "storm-cli-utilities/cli.h"
+#include "storm-cli-utilities/model-handling.h"
 #include "storm/models/ModelBase.h"
 #include "storm/storage/SymbolicModelDescription.h"
 #include "storm/utility/file.h"
@@ -23,41 +24,11 @@
 #include "storm/exceptions/InvalidSettingsException.h"
 #include "storm/exceptions/NotSupportedException.h"
 
-#include "storm/cli/cli.cpp"
-
 namespace storm {
     namespace pars {
     
         typedef typename storm::cli::SymbolicInput SymbolicInput;
-        
-        template <typename ValueType>
-        std::shared_ptr<storm::models::ModelBase> buildModelSparse(SymbolicInput const& input, storm::settings::modules::IOSettings const& ioSettings) {
-            return storm::api::buildSparseModel<ValueType>(input.model.get(), storm::api::extractFormulasFromProperties(input.properties), ioSettings.isBuildChoiceLabelsSet());
-        }
 
-        template <storm::dd::DdType DdType, typename ValueType>
-        std::shared_ptr<storm::models::ModelBase> buildModel(storm::settings::modules::CoreSettings::Engine const& engine, SymbolicInput const& input, storm::settings::modules::IOSettings const& ioSettings) {
-            storm::utility::Stopwatch modelBuildingWatch(true);
-
-            std::shared_ptr<storm::models::ModelBase> result;
-            if (input.model) {
-                if (engine == storm::settings::modules::CoreSettings::Engine::Dd || engine == storm::settings::modules::CoreSettings::Engine::Hybrid) {
-                    result = storm::cli::buildModelDd<DdType, ValueType>(input);
-                } else if (engine == storm::settings::modules::CoreSettings::Engine::Sparse) {
-                    result = storm::pars::buildModelSparse<ValueType>(input, ioSettings);
-                }
-            } else if (ioSettings.isExplicitSet() || ioSettings.isExplicitDRNSet()) {
-                STORM_LOG_THROW(engine == storm::settings::modules::CoreSettings::Engine::Sparse, storm::exceptions::InvalidSettingsException, "Can only use sparse engine with explicit input.");
-                result = storm::cli::buildModelExplicit<ValueType>(ioSettings);
-            }
-            
-            modelBuildingWatch.stop();
-            if (result) {
-                STORM_PRINT_AND_LOG("Time for model construction: " << modelBuildingWatch << "." << std::endl << std::endl);
-            }
-
-            return result;
-        }
 
         
         template <typename ValueType>
@@ -272,14 +243,16 @@ namespace storm {
         void processInputWithValueTypeAndDdlib(SymbolicInput& input) {
             auto coreSettings = storm::settings::getModule<storm::settings::modules::CoreSettings>();
             auto ioSettings = storm::settings::getModule<storm::settings::modules::IOSettings>();
+
+            auto buildSettings = storm::settings::getModule<storm::settings::modules::BuildSettings>();
             auto parSettings = storm::settings::getModule<storm::settings::modules::ParametricSettings>();
             
             auto engine = coreSettings.getEngine();
             STORM_LOG_THROW(engine == storm::settings::modules::CoreSettings::Engine::Sparse || engine == storm::settings::modules::CoreSettings::Engine::Hybrid || engine == storm::settings::modules::CoreSettings::Engine::Dd, storm::exceptions::InvalidSettingsException, "The selected engine is not supported for parametric models.");
             
             std::shared_ptr<storm::models::ModelBase> model;
-            if (!ioSettings.isNoBuildModelSet()) {
-                model = storm::pars::buildModel<DdType, ValueType>(engine, input, ioSettings);
+            if (!buildSettings.isNoBuildModelSet()) {
+                model = storm::cli::buildModel<DdType, ValueType>(engine, input, ioSettings);
             }
             
             if (model) {
@@ -306,15 +279,8 @@ namespace storm {
 
             if (parSettings.onlyObtainConstraints()) {
                 STORM_LOG_THROW(parSettings.exportResultToFile(), storm::exceptions::InvalidSettingsException, "When computing constraints, export path has to be specified.");
-                if (model->isOfType(storm::models::ModelType::Dtmc)) {
-                    auto dtmc = model->template as<storm::models::sparse::Dtmc<ValueType>>();
-                    storm::api::exportParametricResultToFile<ValueType>(boost::none, storm::analysis::ConstraintCollector<ValueType>(*dtmc),parSettings.exportResultPath());
-                    return;
-                } else {
-                    STORM_LOG_THROW(parSettings.exportResultToFile(), storm::exceptions::NotImplementedException, "Constraints for MDPs and CTMCs not implemented.");
-
-                }
-
+                storm::api::exportParametricResultToFile<ValueType>(boost::none, storm::analysis::ConstraintCollector<ValueType>(*(model->as<storm::models::sparse::Model<ValueType>>())), parSettings.exportResultPath());
+                return;
             }
 
             if (model) {
@@ -335,27 +301,7 @@ namespace storm {
         
             processInputWithValueTypeAndDdlib<storm::dd::DdType::Sylvan, storm::RationalFunction>(symbolicInput);
         }
-        
-        int64_t process(const int argc, const char** argv) {
-            storm::utility::setUp();
-            storm::cli::printHeader("Storm-pars", argc, argv);
-            storm::settings::initializeParsSettings("Storm-pars", "storm-pars");
-            
-            storm::utility::Stopwatch totalTimer(true);
-            if (!storm::cli::parseOptions(argc, argv)) {
-                return -1;
-            }
-            
-            processOptions();
-        
-            totalTimer.stop();
-            if (storm::settings::getModule<storm::settings::modules::ResourceSettings>().isPrintTimeAndMemorySet()) {
-                storm::cli::printTimeAndMemoryStatistics(totalTimer.getTimeInMilliseconds());
-            }
-        
-            storm::utility::cleanUp();
-            return 0;
-        }
+
     }
 }
 
@@ -366,7 +312,24 @@ namespace storm {
 int main(const int argc, const char** argv) {
 
     try {
-        return storm::pars::process(argc, argv);
+        storm::utility::setUp();
+        storm::cli::printHeader("Storm-pars", argc, argv);
+        storm::settings::initializeParsSettings("Storm-pars", "storm-pars");
+
+        storm::utility::Stopwatch totalTimer(true);
+        if (!storm::cli::parseOptions(argc, argv)) {
+            return -1;
+        }
+
+        storm::pars::processOptions();
+
+        totalTimer.stop();
+        if (storm::settings::getModule<storm::settings::modules::ResourceSettings>().isPrintTimeAndMemorySet()) {
+            storm::cli::printTimeAndMemoryStatistics(totalTimer.getTimeInMilliseconds());
+        }
+
+        storm::utility::cleanUp();
+        return 0;
     } catch (storm::exceptions::BaseException const& exception) {
         STORM_LOG_ERROR("An exception caused Storm-pars to terminate. The message of the exception is: " << exception.what());
         return 1;

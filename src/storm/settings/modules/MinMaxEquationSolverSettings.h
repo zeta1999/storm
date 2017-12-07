@@ -4,6 +4,7 @@
 #include "storm/settings/modules/ModuleSettings.h"
 
 #include "storm/solver/SolverSelectionOptions.h"
+#include "storm/solver/MultiplicationStyle.h"
 
 namespace storm {
     namespace settings {
@@ -27,11 +28,18 @@ namespace storm {
                 bool isMinMaxEquationSolvingMethodSet() const;
                 
                 /*!
-                 * Retrieves the selected min/max equation solving technique.
+                 * Retrieves the selected min/max equation solving method.
                  *
-                 * @return The selected min/max equation solving technique.
+                 * @return The selected min/max equation solving method.
                  */
                 storm::solver::MinMaxMethod getMinMaxEquationSolvingMethod() const;
+                
+                /*!
+                 * Retrieves whether the min/max equation solving method is set from its default value.
+                 *
+                 * @return True iff if it is set from its default value.
+                 */
+                bool isMinMaxEquationSolvingMethodSetFromDefaultValue() const;
                 
                 /*!
                  * Retrieves whether the maximal iteration count has been set.
@@ -82,6 +90,13 @@ namespace storm {
                  */
                 storm::solver::LraMethod getLraMethod() const;
                 
+                /*!
+                 * Retrieves the multiplication style to use in the min-max methods.
+                 *
+                 * @return The multiplication style
+                 */
+                storm::solver::MultiplicationStyle getValueIterationMultiplicationStyle() const;
+                
                 // The name of the module.
                 static const std::string moduleName;
                 
@@ -92,6 +107,7 @@ namespace storm {
                 static const std::string precisionOptionName;
                 static const std::string absoluteOptionName;
                 static const std::string lraMethodOptionName;
+                static const std::string valueIterationMultiplicationStyleOptionName;
             };
             
         }

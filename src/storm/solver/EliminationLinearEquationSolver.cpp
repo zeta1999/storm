@@ -3,6 +3,7 @@
 #include <numeric>
 
 #include "storm/settings/SettingsManager.h"
+#include "storm/settings/modules/EliminationSettings.h"
 
 #include "storm/solver/stateelimination/StatePriorityQueue.h"
 #include "storm/solver/stateelimination/PrioritizedStateEliminator.h"
@@ -19,27 +20,17 @@ namespace storm {
         using namespace storm::utility::stateelimination;
         
         template<typename ValueType>
-        EliminationLinearEquationSolverSettings<ValueType>::EliminationLinearEquationSolverSettings() {
-            order = storm::settings::getModule<storm::settings::modules::EliminationSettings>().getEliminationOrder();
+        EliminationLinearEquationSolver<ValueType>::EliminationLinearEquationSolver() {
+            // Intentionally left empty.
         }
         
         template<typename ValueType>
-        void EliminationLinearEquationSolverSettings<ValueType>::setEliminationOrder(storm::settings::modules::EliminationSettings::EliminationOrder const& order) {
-            this->order = order;
-        }
-        
-        template<typename ValueType>
-        storm::settings::modules::EliminationSettings::EliminationOrder EliminationLinearEquationSolverSettings<ValueType>::getEliminationOrder() const {
-            return order;
-        }
-        
-        template<typename ValueType>
-        EliminationLinearEquationSolver<ValueType>::EliminationLinearEquationSolver(storm::storage::SparseMatrix<ValueType> const& A, EliminationLinearEquationSolverSettings<ValueType> const& settings) : localA(nullptr), A(nullptr), settings(settings) {
+        EliminationLinearEquationSolver<ValueType>::EliminationLinearEquationSolver(storm::storage::SparseMatrix<ValueType> const& A) : localA(nullptr), A(nullptr) {
             this->setMatrix(A);
         }
         
         template<typename ValueType>
-        EliminationLinearEquationSolver<ValueType>::EliminationLinearEquationSolver(storm::storage::SparseMatrix<ValueType>&& A, EliminationLinearEquationSolverSettings<ValueType> const& settings) : localA(nullptr), A(nullptr), settings(settings) {
+        EliminationLinearEquationSolver<ValueType>::EliminationLinearEquationSolver(storm::storage::SparseMatrix<ValueType>&& A) : localA(nullptr), A(nullptr) {
             this->setMatrix(std::move(A));
         }
         
@@ -58,24 +49,14 @@ namespace storm {
         }
         
         template<typename ValueType>
-        bool EliminationLinearEquationSolver<ValueType>::solveEquations(std::vector<ValueType>& x, std::vector<ValueType> const& b) const {
+        bool EliminationLinearEquationSolver<ValueType>::internalSolveEquations(Environment const& env, std::vector<ValueType>& x, std::vector<ValueType> const& b) const {
             // FIXME: This solver will not work for all input systems. More concretely, the current implementation will
-            // not work for systems that have a 0 on the diagonal. This is not a restriction of this technique in general
+            // not work for systems that have a 1 on the diagonal. This is not a restriction of this technique in general
             // but arbitrary matrices require pivoting, which is not currently implemented.
             
             STORM_LOG_INFO("Solving linear equation system (" << x.size() << " rows) with elimination");
-            
-            // We need to revert the transformation into an equation system matrix, because the elimination procedure
-            // and the distance computation is based on the probability matrix instead.
-            storm::storage::SparseMatrix<ValueType> locallyConvertedMatrix;
-            if (localA) {
-                localA->convertToEquationSystem();
-            } else {
-                locallyConvertedMatrix = *A;
-                locallyConvertedMatrix.convertToEquationSystem();
-            }
-            
-            storm::storage::SparseMatrix<ValueType> const& transitionMatrix = localA ? *localA : locallyConvertedMatrix;
+
+            storm::storage::SparseMatrix<ValueType> const& transitionMatrix = localA ? *localA : *A;
             storm::storage::SparseMatrix<ValueType> backwardTransitions = transitionMatrix.transpose();
             
             // Initialize the solution to the right-hand side of the equation system.
@@ -86,7 +67,10 @@ namespace storm {
             storm::storage::FlexibleSparseMatrix<ValueType> flexibleBackwardTransitions(backwardTransitions, true);
             
             boost::optional<std::vector<uint_fast64_t>> distanceBasedPriorities;
-            auto order = this->getSettings().getEliminationOrder();
+            
+            // TODO: get the order from the environment
+            storm::settings::modules::EliminationSettings::EliminationOrder order = storm::settings::getModule<storm::settings::modules::EliminationSettings>().getEliminationOrder();
+            
             if (eliminationOrderNeedsDistances(order)) {
                 // Since we have no initial states at this point, we determine a representative of every BSCC regarding
                 // the backward transitions, because this means that every row is reachable from this set of rows, which
@@ -106,11 +90,6 @@ namespace storm {
                 eliminator.eliminateState(state, false);
             }
             
-            // After having solved the system, we need to revert the transition system if we kept it local.
-            if (localA) {
-                localA->convertToEquationSystem();
-            }
-
             return true;
         }
         
@@ -132,13 +111,8 @@ namespace storm {
         }
         
         template<typename ValueType>
-        EliminationLinearEquationSolverSettings<ValueType>& EliminationLinearEquationSolver<ValueType>::getSettings() {
-            return settings;
-        }
-        
-        template<typename ValueType>
-        EliminationLinearEquationSolverSettings<ValueType> const& EliminationLinearEquationSolver<ValueType>::getSettings() const {
-            return settings;
+        LinearEquationSolverProblemFormat EliminationLinearEquationSolver<ValueType>::getEquationProblemFormat(Environment const& env) const {
+            return LinearEquationSolverProblemFormat::FixedPointSystem;
         }
         
         template<typename ValueType>
@@ -152,23 +126,8 @@ namespace storm {
         }
         
         template<typename ValueType>
-        std::unique_ptr<storm::solver::LinearEquationSolver<ValueType>> EliminationLinearEquationSolverFactory<ValueType>::create(storm::storage::SparseMatrix<ValueType> const& matrix) const {
-            return std::make_unique<storm::solver::EliminationLinearEquationSolver<ValueType>>(matrix, settings);
-        }
-        
-        template<typename ValueType>
-        std::unique_ptr<storm::solver::LinearEquationSolver<ValueType>> EliminationLinearEquationSolverFactory<ValueType>::create(storm::storage::SparseMatrix<ValueType>&& matrix) const {
-            return std::make_unique<storm::solver::EliminationLinearEquationSolver<ValueType>>(std::move(matrix), settings);
-        }
-        
-        template<typename ValueType>
-        EliminationLinearEquationSolverSettings<ValueType>& EliminationLinearEquationSolverFactory<ValueType>::getSettings() {
-            return settings;
-        }
-        
-        template<typename ValueType>
-        EliminationLinearEquationSolverSettings<ValueType> const& EliminationLinearEquationSolverFactory<ValueType>::getSettings() const {
-            return settings;
+        std::unique_ptr<storm::solver::LinearEquationSolver<ValueType>> EliminationLinearEquationSolverFactory<ValueType>::create(Environment const& env, LinearEquationSolverTask const& task) const {
+            return std::make_unique<storm::solver::EliminationLinearEquationSolver<ValueType>>();
         }
         
         template<typename ValueType>
@@ -176,13 +135,10 @@ namespace storm {
             return std::make_unique<EliminationLinearEquationSolverFactory<ValueType>>(*this);
         }
         
-        template class EliminationLinearEquationSolverSettings<double>;
         template class EliminationLinearEquationSolver<double>;
         template class EliminationLinearEquationSolverFactory<double>;
 
 #ifdef STORM_HAVE_CARL
-        template class EliminationLinearEquationSolverSettings<storm::RationalNumber>;
-        template class EliminationLinearEquationSolverSettings<storm::RationalFunction>;
         
         template class EliminationLinearEquationSolver<storm::RationalNumber>;
         template class EliminationLinearEquationSolver<storm::RationalFunction>;

@@ -7,18 +7,6 @@
 
 namespace storm {
     namespace solver {
-        template<typename ValueType>
-        class EliminationLinearEquationSolverSettings {
-        public:
-            EliminationLinearEquationSolverSettings();
-            
-            void setEliminationOrder(storm::settings::modules::EliminationSettings::EliminationOrder const& order);
-            
-            storm::settings::modules::EliminationSettings::EliminationOrder getEliminationOrder() const;
-
-        private:
-            storm::settings::modules::EliminationSettings::EliminationOrder order;
-        };
         
         /*!
          * A class that uses gaussian elimination to implement the LinearEquationSolver interface.
@@ -26,21 +14,21 @@ namespace storm {
         template<typename ValueType>
         class EliminationLinearEquationSolver : public LinearEquationSolver<ValueType> {
         public:
-            EliminationLinearEquationSolver(storm::storage::SparseMatrix<ValueType> const& A, EliminationLinearEquationSolverSettings<ValueType> const& settings = EliminationLinearEquationSolverSettings<ValueType>());
-            EliminationLinearEquationSolver(storm::storage::SparseMatrix<ValueType>&& A, EliminationLinearEquationSolverSettings<ValueType> const& settings = EliminationLinearEquationSolverSettings<ValueType>());
+            EliminationLinearEquationSolver();
+            EliminationLinearEquationSolver(storm::storage::SparseMatrix<ValueType> const& A);
+            EliminationLinearEquationSolver(storm::storage::SparseMatrix<ValueType>&& A);
             
             virtual void setMatrix(storm::storage::SparseMatrix<ValueType> const& A) override;
             virtual void setMatrix(storm::storage::SparseMatrix<ValueType>&& A) override;
             
-            virtual bool solveEquations(std::vector<ValueType>& x, std::vector<ValueType> const& b) const override;
             virtual void multiply(std::vector<ValueType>& x, std::vector<ValueType> const* b, std::vector<ValueType>& result) const override;
 
-            EliminationLinearEquationSolverSettings<ValueType>& getSettings();
-            EliminationLinearEquationSolverSettings<ValueType> const& getSettings() const;
+            virtual LinearEquationSolverProblemFormat getEquationProblemFormat(Environment const& env) const override;
+
+        protected:
+            virtual bool internalSolveEquations(Environment const& env, std::vector<ValueType>& x, std::vector<ValueType> const& b) const override;
             
         private:
-            void initializeSettings();
-            
             virtual uint64_t getMatrixRowCount() const override;
             virtual uint64_t getMatrixColumnCount() const override;
             
@@ -51,24 +39,17 @@ namespace storm {
             // A pointer to the original sparse matrix given to this solver. If the solver takes posession of the matrix
             // the pointer refers to localA.
             storm::storage::SparseMatrix<ValueType> const* A;
-            
-            // The settings used by the solver.
-            EliminationLinearEquationSolverSettings<ValueType> settings;
         };
         
         template<typename ValueType>
         class EliminationLinearEquationSolverFactory : public LinearEquationSolverFactory<ValueType> {
         public:
-            virtual std::unique_ptr<storm::solver::LinearEquationSolver<ValueType>> create(storm::storage::SparseMatrix<ValueType> const& matrix) const override;
-            virtual std::unique_ptr<storm::solver::LinearEquationSolver<ValueType>> create(storm::storage::SparseMatrix<ValueType>&& matrix) const override;
+            using LinearEquationSolverFactory<ValueType>::create;
             
-            EliminationLinearEquationSolverSettings<ValueType>& getSettings();
-            EliminationLinearEquationSolverSettings<ValueType> const& getSettings() const;
+            virtual std::unique_ptr<storm::solver::LinearEquationSolver<ValueType>> create(Environment const& env, LinearEquationSolverTask const& task = LinearEquationSolverTask::Unspecified) const override;
             
             virtual std::unique_ptr<LinearEquationSolverFactory<ValueType>> clone() const override;
 
-        private:
-            EliminationLinearEquationSolverSettings<ValueType> settings;
         };
     }
 }

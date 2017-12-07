@@ -3,6 +3,9 @@
 
 #include "storm/settings/modules/ModuleSettings.h"
 
+#include "storm/solver/MultiplicationStyle.h"
+#include "storm/solver/SolverSelectionOptions.h"
+
 namespace storm {
     namespace settings {
         namespace modules {
@@ -12,9 +15,6 @@ namespace storm {
              */
             class NativeEquationSolverSettings : public ModuleSettings {
             public:
-                // An enumeration of all available methods for solving linear equations.
-                enum class LinearEquationMethod { Jacobi, GaussSeidel, SOR };
-                
                 // An enumeration of all available convergence criteria.
                 enum class ConvergenceCriterion { Absolute, Relative };
                 
@@ -31,11 +31,18 @@ namespace storm {
                 bool isLinearEquationSystemTechniqueSet() const;
                 
                 /*!
+                 * Retrieves whether the linear equation system technique is set from its default value.
+                 *
+                 * @return True iff it was set from its default value.
+                 */
+                bool isLinearEquationSystemTechniqueSetFromDefaultValue() const;
+                
+                /*!
                  * Retrieves the method that is to be used for solving systems of linear equations.
                  *
                  * @return The method to use.
                  */
-                LinearEquationMethod getLinearEquationSystemMethod() const;
+                storm::solver::NativeLinearEquationSolverMethod getLinearEquationSystemMethod() const;
                 
                 /*!
                  * Retrieves whether the maximal iteration count has been set.
@@ -86,6 +93,13 @@ namespace storm {
                  */
                 ConvergenceCriterion getConvergenceCriterion() const;
                 
+                /*!
+                 * Retrieves the multiplication style to use in the power method.
+                 *
+                 * @return The multiplication style.
+                 */
+                storm::solver::MultiplicationStyle getPowerMethodMultiplicationStyle() const;
+                
                 bool check() const override;
                 
                 // The name of the module.
@@ -99,6 +113,7 @@ namespace storm {
                 static const std::string maximalIterationsOptionShortName;
                 static const std::string precisionOptionName;
                 static const std::string absoluteOptionName;
+                static const std::string powerMethodMultiplicationStyleOptionName;
             };
             
         } // namespace modules

@@ -10,6 +10,7 @@
 #include "storm/utility/constants.h"
 #include "storm/utility/macros.h"
 #include "storm/exceptions/NotImplementedException.h"
+#include "storm/exceptions/NotSupportedException.h"
 
 namespace storm {
     namespace dd {
@@ -128,6 +129,11 @@ namespace storm {
         }
         
         template<typename ValueType>
+        InternalAdd<DdType::CUDD, storm::RationalNumber> InternalAdd<DdType::CUDD, ValueType>::sharpenKwekMehlhorn(size_t precision) const {
+            STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Operation not supported");
+        }
+        
+        template<typename ValueType>
         InternalAdd<DdType::CUDD, ValueType> InternalAdd<DdType::CUDD, ValueType>::minimum(InternalAdd<DdType::CUDD, ValueType> const& other) const {
             return InternalAdd<DdType::CUDD, ValueType>(ddManager, this->getCuddAdd().Minimum(other.getCuddAdd()));
         }
@@ -137,6 +143,18 @@ namespace storm {
             return InternalAdd<DdType::CUDD, ValueType>(ddManager, this->getCuddAdd().Maximum(other.getCuddAdd()));
         }
         
+        template<typename ValueType>
+        template<typename TargetValueType>
+        typename std::enable_if<std::is_same<ValueType, TargetValueType>::value, InternalAdd<DdType::CUDD, TargetValueType>>::type InternalAdd<DdType::CUDD, ValueType>::toValueType() const {
+            return *this;
+        }
+
+        template<typename ValueType>
+        template<typename TargetValueType>
+        typename std::enable_if<!std::is_same<ValueType, TargetValueType>::value, InternalAdd<DdType::CUDD, TargetValueType>>::type InternalAdd<DdType::CUDD, ValueType>::toValueType() const {
+            STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Operation not supported");
+        }
+
         template<typename ValueType>
         InternalAdd<DdType::CUDD, ValueType> InternalAdd<DdType::CUDD, ValueType>::sumAbstract(InternalBdd<DdType::CUDD> const& cube) const {
             return InternalAdd<DdType::CUDD, ValueType>(ddManager, this->getCuddAdd().ExistAbstract(cube.toAdd<ValueType>().getCuddAdd()));
@@ -169,6 +187,11 @@ namespace storm {
             } else {
                 return this->getCuddAdd().EqualSupNorm(other.getCuddAdd(), precision);
             }
+        }
+
+        template<>
+        bool InternalAdd<DdType::CUDD, storm::RationalNumber>::equalModuloPrecision(InternalAdd<DdType::CUDD, storm::RationalNumber> const& other, storm::RationalNumber const& precision, bool relative) const {
+            STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Operation not supported.");
         }
         
         template<typename ValueType>
@@ -209,17 +232,34 @@ namespace storm {
                 summationAdds.push_back(ddVariable.toAdd<ValueType>().getCuddAdd());
             }
             
+//            return InternalAdd<DdType::CUDD, ValueType>(ddManager, this->getCuddAdd().TimesPlus(otherMatrix.getCuddAdd(), summationAdds));
+//            return InternalAdd<DdType::CUDD, ValueType>(ddManager, this->getCuddAdd().Triangle(otherMatrix.getCuddAdd(), summationAdds));
             return InternalAdd<DdType::CUDD, ValueType>(ddManager, this->getCuddAdd().MatrixMultiply(otherMatrix.getCuddAdd(), summationAdds));
+        }
+        
+        template<typename ValueType>
+        InternalAdd<DdType::CUDD, ValueType> InternalAdd<DdType::CUDD, ValueType>::multiplyMatrix(InternalBdd<DdType::CUDD> const& otherMatrix, std::vector<InternalBdd<DdType::CUDD>> const& summationDdVariables) const {
+            return this->multiplyMatrix(otherMatrix.template toAdd<ValueType>(), summationDdVariables);
         }
         
         template<typename ValueType>
         InternalBdd<DdType::CUDD> InternalAdd<DdType::CUDD, ValueType>::greater(ValueType const& value) const {
             return InternalBdd<DdType::CUDD>(ddManager, this->getCuddAdd().BddStrictThreshold(value));
         }
-        
+
+        template<>
+        InternalBdd<DdType::CUDD> InternalAdd<DdType::CUDD, storm::RationalNumber>::greater(storm::RationalNumber const& value) const {
+            STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Operation not supported.");
+        }
+
         template<typename ValueType>
         InternalBdd<DdType::CUDD> InternalAdd<DdType::CUDD, ValueType>::greaterOrEqual(ValueType const& value) const {
             return InternalBdd<DdType::CUDD>(ddManager, this->getCuddAdd().BddThreshold(value));
+        }
+
+        template<>
+        InternalBdd<DdType::CUDD> InternalAdd<DdType::CUDD, storm::RationalNumber>::greaterOrEqual(storm::RationalNumber const& value) const {
+            STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Operation not supported.");
         }
         
         template<typename ValueType>
@@ -227,9 +267,19 @@ namespace storm {
             return InternalBdd<DdType::CUDD>(ddManager, ~this->getCuddAdd().BddThreshold(value));
         }
         
+        template<>
+        InternalBdd<DdType::CUDD> InternalAdd<DdType::CUDD, storm::RationalNumber>::less(storm::RationalNumber const& value) const {
+            STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Operation not supported.");
+        }
+        
         template<typename ValueType>
         InternalBdd<DdType::CUDD> InternalAdd<DdType::CUDD, ValueType>::lessOrEqual(ValueType const& value) const {
             return InternalBdd<DdType::CUDD>(ddManager, ~this->getCuddAdd().BddStrictThreshold(value));
+        }
+        
+        template<>
+        InternalBdd<DdType::CUDD> InternalAdd<DdType::CUDD, storm::RationalNumber>::lessOrEqual(storm::RationalNumber const& value) const {
+            STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Operation not supported.");
         }
         
         template<typename ValueType>
@@ -275,18 +325,18 @@ namespace storm {
         template<typename ValueType>
         ValueType InternalAdd<DdType::CUDD, ValueType>::getMin() const {
             cudd::ADD constantMinAdd = this->getCuddAdd().FindMin();
-            return static_cast<double>(Cudd_V(constantMinAdd.getNode()));
+            return storm::utility::convertNumber<ValueType>(Cudd_V(constantMinAdd.getNode()));
         }
         
         template<typename ValueType>
         ValueType InternalAdd<DdType::CUDD, ValueType>::getMax() const {
             cudd::ADD constantMaxAdd = this->getCuddAdd().FindMax();
-            return static_cast<double>(Cudd_V(constantMaxAdd.getNode()));
+            return storm::utility::convertNumber<ValueType>(Cudd_V(constantMaxAdd.getNode()));
         }
         
         template<typename ValueType>
         ValueType InternalAdd<DdType::CUDD, ValueType>::getValue() const {
-            return static_cast<ValueType>(Cudd_V(this->getCuddAdd().getNode()));
+            return storm::utility::convertNumber<ValueType>(Cudd_V(this->getCuddAdd().getNode()));
         }
         
         template<typename ValueType>
@@ -315,7 +365,7 @@ namespace storm {
         }
         
         template<typename ValueType>
-        void InternalAdd<DdType::CUDD, ValueType>::exportToDot(std::string const& filename, std::vector<std::string> const& ddVariableNamesAsStrings) const {
+        void InternalAdd<DdType::CUDD, ValueType>::exportToDot(std::string const& filename, std::vector<std::string> const& ddVariableNamesAsStrings, bool showVariablesIfPossible) const {
             // Build the name input of the DD.
             std::vector<char*> ddNames;
             std::string ddName("f");
@@ -332,7 +382,11 @@ namespace storm {
             // Open the file, dump the DD and close it again.
             FILE* filePointer = fopen(filename.c_str() , "w");
             std::vector<cudd::ADD> cuddAddVector = { this->getCuddAdd() };
-            ddManager->getCuddManager().DumpDot(cuddAddVector, &ddVariableNames[0], &ddNames[0], filePointer);
+            if (showVariablesIfPossible) {
+                ddManager->getCuddManager().DumpDot(cuddAddVector, ddVariableNames.data(), &ddNames[0], filePointer);
+            } else {
+                ddManager->getCuddManager().DumpDot(cuddAddVector, nullptr, &ddNames[0], filePointer);
+            }
             fclose(filePointer);
             
             // Finally, delete the names.
@@ -349,7 +403,7 @@ namespace storm {
             int* cube;
             double value;
             DdGen* generator = this->getCuddAdd().FirstCube(&cube, &value);
-            return AddIterator<DdType::CUDD, ValueType>(fullDdManager, generator, cube, value, (Cudd_IsGenEmpty(generator) != 0), &metaVariables, enumerateDontCareMetaVariables);
+            return AddIterator<DdType::CUDD, ValueType>(fullDdManager, generator, cube, storm::utility::convertNumber<ValueType>(value), (Cudd_IsGenEmpty(generator) != 0), &metaVariables, enumerateDontCareMetaVariables);
         }
         
         template<typename ValueType>
@@ -365,6 +419,13 @@ namespace storm {
         template<typename ValueType>
         DdNode* InternalAdd<DdType::CUDD, ValueType>::getCuddDdNode() const {
             return this->getCuddAdd().getNode();
+        }
+        
+        template<typename ValueType>
+        std::string InternalAdd<DdType::CUDD, ValueType>::getStringId() const {
+            std::stringstream ss;
+            ss << this->getCuddDdNode();
+            return ss.str();
         }
 
         template<typename ValueType>
@@ -426,6 +487,11 @@ namespace storm {
         }
 
         template<typename ValueType>
+        InternalDdManager<DdType::CUDD> const& InternalAdd<DdType::CUDD, ValueType>::getInternalDdManager() const {
+            return *ddManager;
+        }
+        
+        template<typename ValueType>
         void InternalAdd<DdType::CUDD, ValueType>::composeWithExplicitVector(storm::dd::Odd const& odd, std::vector<uint_fast64_t> const& ddVariableIndices, std::vector<ValueType>& targetVector, std::function<ValueType (ValueType const&, ValueType const&)> const& function) const {
             composeWithExplicitVectorRec(this->getCuddDdNode(), nullptr, 0, ddVariableIndices.size(), 0, odd, ddVariableIndices, targetVector, function);
         }
@@ -445,7 +511,7 @@ namespace storm {
             // If we are at the maximal level, the value to be set is stored as a constant in the DD.
             if (currentLevel == maxLevel) {
                 ValueType& targetValue = targetVector[offsets != nullptr ? (*offsets)[currentOffset] : currentOffset];
-                targetValue = function(targetValue, Cudd_V(dd));
+                targetValue = function(targetValue, storm::utility::convertNumber<ValueType>(Cudd_V(dd)));
             } else if (ddVariableIndices[currentLevel] < Cudd_NodeReadIndex(dd)) {
                 // If we skipped a level, we need to enumerate the explicit entries for the case in which the bit is set
                 // and for the one in which it is not set.
@@ -531,7 +597,7 @@ namespace storm {
             // If we are at the maximal level, the value to be set is stored as a constant in the DD.
             if (currentRowLevel + currentColumnLevel == maxLevel) {
                 if (generateValues) {
-                    columnsAndValues[rowIndications[rowGroupOffsets[currentRowOffset]]] = storm::storage::MatrixEntry<uint_fast64_t, ValueType>(currentColumnOffset, Cudd_V(dd));
+                    columnsAndValues[rowIndications[rowGroupOffsets[currentRowOffset]]] = storm::storage::MatrixEntry<uint_fast64_t, ValueType>(currentColumnOffset, storm::utility::convertNumber<ValueType>(Cudd_V(dd)));
                 }
                 ++rowIndications[rowGroupOffsets[currentRowOffset]];
             } else {
@@ -633,7 +699,21 @@ namespace storm {
             }
         }
         
+        template<>
+        DdNode* InternalAdd<DdType::CUDD, storm::RationalNumber>::fromVectorRec(::DdManager* manager, uint_fast64_t& currentOffset, uint_fast64_t currentLevel, uint_fast64_t maxLevel, std::vector<storm::RationalNumber> const& values, Odd const& odd, std::vector<uint_fast64_t> const& ddVariableIndices) {
+            STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Operation not supported");
+        }
+        
         template class InternalAdd<DdType::CUDD, double>;
+        template InternalAdd<DdType::CUDD, double> InternalAdd<DdType::CUDD, double>::toValueType<double>() const;
         template class InternalAdd<DdType::CUDD, uint_fast64_t>;
+        template InternalAdd<DdType::CUDD, uint_fast64_t> InternalAdd<DdType::CUDD, uint_fast64_t>::toValueType<uint_fast64_t>() const;
+
+#ifdef STORM_HAVE_CARL
+        template class InternalAdd<DdType::CUDD, storm::RationalNumber>;
+        template InternalAdd<DdType::CUDD, storm::RationalNumber> InternalAdd<DdType::CUDD, storm::RationalNumber>::toValueType<storm::RationalNumber>() const;
+        template InternalAdd<DdType::CUDD, storm::RationalNumber> InternalAdd<DdType::CUDD, double>::toValueType<storm::RationalNumber>() const;
+        template InternalAdd<DdType::CUDD, double> InternalAdd<DdType::CUDD, storm::RationalNumber>::toValueType<double>() const;
+#endif
     }
 }

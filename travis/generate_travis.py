@@ -2,14 +2,14 @@
 # Configuration for Linux
 configs_linux = [
     # OS, compiler
-    ("ubuntu-16.10", "gcc", "-6"),
-    ("debian-9", "gcc", "-6"),
+    ("ubuntu-16.10", "gcc", ""),
+    #("debian-9", "gcc", ""),
 ]
 
 # Configurations for Mac
 configs_mac = [
     # OS, compiler
-    ("osx", "clang", "-4.0"),
+    ("osx", "clang", ""),
 ]
 
 # Build types
@@ -23,7 +23,7 @@ stages = [
     ("Build (1st run)", "Build1"),
     ("Build (2nd run)", "Build2"),
     ("Build (3rd run)", "Build3"),
-    ("Build (4th run)", "Build4"),
+    ("Build (4th run)", "BuildLast"),
     ("Test all", "TestAll"),
 ]
 
@@ -39,6 +39,8 @@ if __name__ == "__main__":
     s += "branches:\n"
     s += "  only:\n"
     s += "  - master\n"
+    s += "  - stable\n"
+    s += "sudo: required\n"
     s += "dist: trusty\n"
     s += "language: cpp\n"
     s += "\n"
@@ -52,7 +54,14 @@ if __name__ == "__main__":
     s += "# Enable docker support\n"
     s += "services:\n"
     s += "- docker\n"
-    s += "sudo: required\n"
+    s += "\n"
+
+    s += "notifications:\n"
+    s += "  email:\n"
+    s += "    on_failure: always\n"
+    s += "    on_success: change\n"
+    s += "    recipients:\n"
+    s += '    secure: "Q9CW/PtyWkZwExDrfFFb9n1STGYsRfI6awv1bZHcGwfrDvhpXoMCuF8CwviIfilm7fFJJEoKizTtdRpY0HrOnY/8KY111xrtcFYosxdndv7xbESodIxQOUoIEFCO0mCNHwWYisoi3dAA7H3Yn661EsxluwHjzX5vY0xSbw0n229hlsFz092HwGLSU33zHl7eXpQk+BOFmBTRGlOq9obtDZ17zbHz1oXFZntHK/JDUIYP0b0uq8NvE2jM6CIVdcuSwmIkOhZJoO2L3Py3rBbPci+L2PSK4Smv2UjCPF8KusnOaFIyDB3LcNM9Jqq5ssJMrK/KaO6BiuYrOZXYWZ7KEg3Y/naC8HjOH1dzty+P7oW46sb9F03pTsufqD4R7wcK+9wROTztO6aJPDG/IPH7EWgrBTxqlOkVRwi2eYuQouZpZUW6EMClKbMHMIxCH2S8aOk/r1w2cNwmPEcunnP0nl413x/ByHr4fTPFykPj8pQxIsllYjpdWBRQfDOauKWGzk6LcrFW0qpWP+/aJ2vYu/IoZQMG5lMHbp6Y1Lg09pYm7Q983v3b7D+JvXhOXMyGq91HyPahA2wwKoG1GA4uoZ2I95/IFYNiKkelDd3WTBoFLNF9YFoEJNdCywm1fO2WY4WkyEFBuQcgDA+YpFMJJMxjTbivYk9jvHk2gji//2w="\n'
     s += "\n"
     s += "#\n"
     s += "# Configurations\n"
@@ -76,6 +85,7 @@ if __name__ == "__main__":
             for build in build_types:
                 buildConfig += "    - stage: {}\n".format(stage[0])
                 buildConfig += "      os: osx\n"
+                buildConfig += "      osx_image: xcode9.1\n"
                 buildConfig += "      compiler: {}\n".format(config[1])
                 buildConfig += "      env: CONFIG={} COMPILER={} STL=libc++\n".format(build, compiler)
                 buildConfig += "      install:\n"

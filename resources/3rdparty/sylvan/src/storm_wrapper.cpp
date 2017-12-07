@@ -9,7 +9,9 @@
 
 #include "storm/adapters/RationalFunctionAdapter.h"
 #include "storm/utility/constants.h"
+#include "storm/utility/KwekMehlhorn.h"
 #include "storm/exceptions/InvalidOperationException.h"
+#include "storm/exceptions/PrecisionExceededException.h"
 
 #include <sylvan_config.h>
 #include <sylvan.h>
@@ -18,6 +20,8 @@
 
 #if defined(STORM_HAVE_GMP) && !defined(STORM_USE_CLN_EA)
 #define RATIONAL_NUMBER_THREAD_SAFE
+#else
+#warning "Rational numbers do not appear to be thread-safe. Use in sylvan will be protected by mutexes, performance might degrade."
 #endif
 
 // A mutex that is used to lock all operations accessing rational numbers as they are not necessarily thread-safe.
@@ -144,6 +148,15 @@ double storm_rational_number_get_value_double(storm_rational_number_ptr a) {
     
     storm::RationalNumber const& srn_a = *(storm::RationalNumber const*)a;
     return storm::utility::convertNumber<double>(srn_a);
+}
+
+storm_rational_number_ptr storm_rational_number_from_double(double value) {
+#ifndef RATIONAL_NUMBER_THREAD_SAFE
+    std::lock_guard<std::mutex> lock(rationalNumberMutex);
+#endif
+    
+    storm::RationalNumber* number = new storm::RationalNumber(storm::utility::convertNumber<storm::RationalNumber>(value));
+    return number;
 }
 
 storm_rational_number_ptr storm_rational_number_plus(storm_rational_number_ptr a, storm_rational_number_ptr b) {
@@ -298,6 +311,31 @@ storm_rational_number_ptr storm_rational_number_ceil(storm_rational_number_ptr a
     return (storm_rational_number_ptr)result_srn;
 }
 
+storm_rational_number_ptr storm_double_sharpen(double value, size_t precision) {
+#ifndef RATIONAL_NUMBER_THREAD_SAFE
+    std::lock_guard<std::mutex> lock(rationalNumberMutex);
+#endif
+
+    try {
+        storm::RationalNumber tmp = storm::utility::kwek_mehlhorn::sharpen<storm::RationalNumber, double>(precision, value);
+        storm::RationalNumber* result_srn = new storm::RationalNumber(tmp);
+        return (storm_rational_number_ptr)result_srn;
+    } catch (storm::exceptions::PrecisionExceededException const& e) {
+        return (storm_rational_number_ptr)0;
+    }
+}
+
+storm_rational_number_ptr storm_rational_number_sharpen(storm_rational_number_ptr a, size_t precision) {
+#ifndef RATIONAL_NUMBER_THREAD_SAFE
+    std::lock_guard<std::mutex> lock(rationalNumberMutex);
+#endif
+
+    storm::RationalNumber const& srn_a = *(storm::RationalNumber const*)a;
+    storm::RationalNumber tmp = storm::utility::kwek_mehlhorn::sharpen<storm::RationalNumber, storm::RationalNumber>(precision, srn_a);
+    storm::RationalNumber* result_srn = new storm::RationalNumber(tmp);
+    return (storm_rational_number_ptr)result_srn;
+}
+
 int storm_rational_number_equal_modulo_precision(int relative, storm_rational_number_ptr a, storm_rational_number_ptr b, storm_rational_number_ptr precision) {
 #ifndef RATIONAL_NUMBER_THREAD_SAFE
     std::lock_guard<std::mutex> lock(rationalNumberMutex);
@@ -308,7 +346,11 @@ int storm_rational_number_equal_modulo_precision(int relative, storm_rational_nu
     storm::RationalNumber const& srn_p = *(storm::RationalNumber const*)precision;
 
     if (relative) {
-        return carl::abs(srn_a - srn_b)/srn_a < srn_p ? 1 : 0;
+        if (storm::utility::isZero<storm::RationalNumber>(srn_a)) {
+            return storm::utility::isZero<storm::RationalNumber>(srn_b);
+        } else {
+            return carl::abs(srn_a - srn_b)/srn_a < srn_p ? 1 : 0;
+        }
     } else {
         return carl::abs(srn_a - srn_b) < srn_p ? 1 : 0;
     }

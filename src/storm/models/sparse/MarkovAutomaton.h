@@ -22,7 +22,7 @@ namespace storm {
                  * For hybrid states (i.e., states with Markovian and probabilistic transitions), it is assumed that the first
                  * choice corresponds to the markovian transitions.
                  *
-                 * @param transitionMatrix The matrix representing the transitions in the model in terms of rates (markocian choices) and probabilities (probabilistic choices).
+                 * @param transitionMatrix The matrix representing the transitions in the model in terms of rates (Markovian choices) and probabilities (probabilistic choices).
                  * @param stateLabeling The labeling of the states.
                  * @param markovianStates A bit vector indicating the Markovian states of the automaton (i.e., states with at least one markovian transition).
                  * @param rewardModels A mapping of reward model names to reward models.
@@ -38,7 +38,7 @@ namespace storm {
                  * For hybrid states (i.e., states with Markovian and probabilistic transitions), it is assumed that the first
                  * choice corresponds to the markovian transitions.
                  *
-                 * @param transitionMatrix The matrix representing the transitions in the model in terms of rates (markocian choices) and probabilities (probabilistic choices).
+                 * @param transitionMatrix The matrix representing the transitions in the model in terms of rates (Markovian choices) and probabilities (probabilistic choices).
                  * @param stateLabeling The labeling of the states.
                  * @param markovianStates A bit vector indicating the Markovian states of the automaton (i.e., states with at least one markovian transition).
                  * @param rewardModels A mapping of reward model names to reward models.
@@ -134,14 +134,19 @@ namespace storm {
                  */
                 void close();
                 
+                /*!
+                 * Determines whether the Markov automaton can be converted to a CTMC without changing any measures.
+                 */
+                bool isConvertibleToCtmc() const;
+                
                 bool hasOnlyTrivialNondeterminism() const;
                 
                 /*!
-                 * Convert the MA into a MA by eliminating all states with probabilistic choices.
+                 * Convert the MA to a CTMC. May only be called if the MA is convertible to a CTMC.
                  *
-                 * @return Ctmc.
+                 * @return The resulting CTMC.
                  */
-                std::shared_ptr<storm::models::sparse::Ctmc<ValueType, RewardModelType>> convertToCTMC() const;
+                std::shared_ptr<storm::models::sparse::Ctmc<ValueType, RewardModelType>> convertToCtmc() const;
                 
                 virtual void printModelInformationToStream(std::ostream& out) const override;
                 

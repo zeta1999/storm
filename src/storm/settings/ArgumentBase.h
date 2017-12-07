@@ -26,7 +26,9 @@ namespace storm {
 			ArgumentBase(std::string const& name, std::string const& description) : hasBeenSet(false), name(name), description(description) {
                 // Intentionally left empty.
             }
-            
+
+            virtual ~ArgumentBase() = default;
+
             /*!
              * Retrieves the type of the argument.
              *
@@ -80,6 +82,8 @@ namespace storm {
              */
 			virtual void setFromDefaultValue() = 0;
 
+            virtual bool wasSetFromDefaultValue() const = 0;
+            
             /*!
              * Tries to set the value of the argument from the given string.
              *
@@ -134,7 +138,7 @@ namespace storm {
             
             friend std::ostream& operator<<(std::ostream& out, ArgumentBase const& argument);
             
-		protected:            
+		protected:
             // A flag indicating whether the argument has been set.
 			bool hasBeenSet;
 

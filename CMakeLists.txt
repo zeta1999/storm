@@ -14,7 +14,8 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${PROJECT_SOURCE_DIR}/resources/cmak
 include(ExternalProject)
 include(RegisterSourceGroup)
 include(imported)
-
+include(CheckCXXSourceCompiles)
+include(CheckCSourceCompiles)
 
 #############################################################
 ##
@@ -33,7 +34,7 @@ MARK_AS_ADVANCED(STORM_FORCE_POPCNT)
 option(USE_BOOST_STATIC_LIBRARIES "Sets whether the Boost libraries should be linked statically." OFF)
 option(STORM_USE_INTELTBB "Sets whether the Intel TBB libraries should be used." OFF)
 option(STORM_USE_GUROBI "Sets whether Gurobi should be used." OFF)
-set(USE_CARL ON)
+set(STORM_CARL_DIR_HINT "" CACHE STRING "A hint where the preferred CArL version can be found. If CArL cannot be found there, it is searched in the OS's default paths.")
 option(STORM_FORCE_SHIPPED_CARL "Sets whether the shipped version of carl is to be used no matter whether carl is found or not." OFF)
 MARK_AS_ADVANCED(STORM_FORCE_SHIPPED_CARL)
 option(USE_SMTRAT "Sets whether SMT-RAT should be included." OFF)
@@ -49,6 +50,8 @@ export_option(STORM_USE_CLN_EA)
 option(STORM_USE_CLN_RF "Sets whether CLN instead of GMP numbers should be used for rational functions." ON)
 export_option(STORM_USE_CLN_RF)
 option(BUILD_SHARED_LIBS "Build the Storm library dynamically" OFF)
+option(STORM_DEBUG_CUDD "Build CUDD in debug mode." OFF)
+MARK_AS_ADVANCED(STORM_DEBUG_CUDD)
 set(BOOST_ROOT "" CACHE STRING "A hint to the root directory of Boost (optional).")
 set(GUROBI_ROOT "" CACHE STRING "A hint to the root directory of Gurobi (optional).")
 set(Z3_ROOT "" CACHE STRING "A hint to the root directory of Z3 (optional).")
@@ -290,6 +293,31 @@ else()
 	set (CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fomit-frame-pointer")
 endif()
 
+# Test compiler by compiling small program.
+CHECK_C_SOURCE_COMPILES("
+	#include <stdio.h>
+	int main() {
+		const char* text = \"A Storm is coming.\";
+		return 0;
+	}"
+	COMPILER_C_WORKS
+)
+CHECK_CXX_SOURCE_COMPILES("
+	#include <string>
+	int main() {
+		const std::string text = \"A Storm is coming.\";
+		return 0;
+	}"
+	COMPILER_CXX_WORKS
+)
+if ((NOT COMPILER_CXX_WORKS) OR (NOT COMPILER_C_WORKS))
+	if (MACOSX)
+		message(FATAL_ERROR "The C/C++ compiler is not configured correctly.\nTry running 'xcode-select --install'.")
+	else()
+		message(FATAL_ERROR "The C/C++ compiler is not configured correctly.")
+	endif()
+endif()
+
 #############################################################
 ##
 ##	RPATH settings
@@ -384,9 +412,7 @@ string(REGEX REPLACE "^[0-9]+\\.[0-9]+\\.[0-9]+\\-[0-9]+\\-[a-z0-9]+\\-(.*)" "\\
 	
 # now check whether the git version lookup failed
 if (STORM_VERSION_MAJOR MATCHES "NOTFOUND")
-	set(STORM_VERSION_MAJOR 1)
-	set(STORM_VERSION_MINOR 1)
-	set(STORM_VERSION_PATCH 0)
+	include(version.cmake)
 	set(STORM_VERSION_GIT_HASH "")
 	set(STORM_VERSION_COMMITS_AHEAD 0)
 	set(STORM_VERSION_DIRTY boost::none)

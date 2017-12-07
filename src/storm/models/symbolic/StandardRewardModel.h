@@ -163,6 +163,19 @@ namespace storm {
                 
                 /*!
                  * Creates a vector representing the complete reward vector based on the state-, state-action- and
+                 * transition-based rewards in the reward model. The state- and state-action rewards are filtered with
+                 * the given filter DD.
+                 *
+                 * @param stateFilterAdd The DD used for filtering the state rewards.
+                 * @param choiceFilterAdd The DD used for filtering the state action rewards.
+                 * @param transitionMatrix The matrix that is used to weight the values of the transition reward matrix.
+                 * @param columnVariables The column variables of the model.
+                 * @return The full state-action reward vector.
+                 */
+                storm::dd::Add<Type, ValueType> getTotalRewardVector(storm::dd::Add<Type, ValueType> const& stateFilterAdd, storm::dd::Add<Type, ValueType> const& choiceFilterAdd, storm::dd::Add<Type, ValueType> const& transitionMatrix, std::set<storm::expressions::Variable> const& columnVariables) const;
+                
+                /*!
+                 * Creates a vector representing the complete reward vector based on the state-, state-action- and
                  * transition-based rewards in the reward model.
                  *
                  * @param transitionMatrix The matrix that is used to weight the values of the transition reward matrix.
@@ -188,6 +201,16 @@ namespace storm {
                  * @return The resulting reward model.
                  */
                 StandardRewardModel<Type, ValueType> divideStateRewardVector(storm::dd::Add<Type, ValueType> const& divisor) const;
+                
+                /*!
+                 * Reduces the transition-based rewards to state-action rewards by taking the average of each row. If
+                 * the corresponding flag is set, the state-action rewards and the state rewards are summed so the model
+                 * only has a state reward vector left. Note that this transformation only  preserves expected rewards,
+                 * but not all reward-based properties.
+                 *
+                 * @param transitionMatrix The transition matrix that is used to weight the rewards in the reward matrix.
+                 */
+                void reduceToStateBasedRewards(storm::dd::Add<Type, ValueType> const& transitionMatrix, std::set<storm::expressions::Variable> const& rowVariables, std::set<storm::expressions::Variable> const& columnVariables, bool reduceToStateRewards);
                 
             private:
                 // The state reward vector.

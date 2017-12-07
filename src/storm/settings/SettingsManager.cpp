@@ -1,7 +1,6 @@
 #include "storm/settings/SettingsManager.h"
 
 #include <cstring>
-#include <cctype>
 #include <mutex>
 #include <iomanip>
 #include <fstream>
@@ -19,6 +18,7 @@
 #include "storm/settings/modules/DebugSettings.h"
 #include "storm/settings/modules/CounterexampleGeneratorSettings.h"
 #include "storm/settings/modules/CuddSettings.h"
+#include "storm/settings/modules/BuildSettings.h"
 #include "storm/settings/modules/SylvanSettings.h"
 #include "storm/settings/modules/EigenEquationSolverSettings.h"
 #include "storm/settings/modules/GmmxxEquationSolverSettings.h"
@@ -60,7 +60,6 @@ namespace storm {
             this->name = name;
             this->executableName = executableName;
         }
-
 
         void SettingsManager::setFromCommandLine(int const argc, char const * const argv[]) {
             // We convert the arguments to a vector of strings and strip off the first element since it refers to the
@@ -271,7 +270,7 @@ namespace storm {
             return moduleIterator->second->getPrintLengthOfLongestOption();
         }
         
-        void SettingsManager::addModule(std::unique_ptr<modules::ModuleSettings>&& moduleSettings) {
+        void SettingsManager::addModule(std::unique_ptr<modules::ModuleSettings>&& moduleSettings, bool doRegister) {
             auto moduleIterator = this->modules.find(moduleSettings->getModuleName());
             STORM_LOG_THROW(moduleIterator == this->modules.end(), storm::exceptions::IllegalFunctionCallException, "Unable to register module '" << moduleSettings->getModuleName() << "' because a module with the same name already exists.");
             
@@ -281,11 +280,13 @@ namespace storm {
             this->modules.emplace(moduleSettings->getModuleName(), std::move(moduleSettings));
             auto iterator = this->modules.find(moduleName);
             std::unique_ptr<modules::ModuleSettings> const& settings = iterator->second;
-            
-            // Now register the options of the module.
-            this->moduleOptions.emplace(moduleName, std::vector<std::shared_ptr<Option>>());
-            for (auto const& option : settings->getOptions()) {
-                this->addOption(option);
+
+            if (doRegister) {
+                // Now register the options of the module.
+                this->moduleOptions.emplace(moduleName, std::vector<std::shared_ptr<Option>>());
+                for (auto const& option : settings->getOptions()) {
+                    this->addOption(option);
+                }
             }
         }
         
@@ -387,7 +388,6 @@ namespace storm {
             for (auto const& nameModulePair : this->modules) {
                 nameModulePair.second->finalize();
                 nameModulePair.second->check();
-
             }
         }
         
@@ -511,6 +511,7 @@ namespace storm {
             // Register all known settings modules.
             storm::settings::addModule<storm::settings::modules::GeneralSettings>();
             storm::settings::addModule<storm::settings::modules::IOSettings>();
+            storm::settings::addModule<storm::settings::modules::BuildSettings>();
             storm::settings::addModule<storm::settings::modules::CoreSettings>();
             storm::settings::addModule<storm::settings::modules::DebugSettings>();
             storm::settings::addModule<storm::settings::modules::CounterexampleGeneratorSettings>();

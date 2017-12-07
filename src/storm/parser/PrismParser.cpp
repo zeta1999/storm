@@ -2,7 +2,6 @@
 
 #include "storm/storage/prism/Compositions.h"
 
-#include "storm/settings/SettingsManager.h"
 
 #include "storm/exceptions/InvalidArgumentException.h"
 #include "storm/exceptions/InvalidTypeException.h"
@@ -16,7 +15,7 @@
 
 namespace storm {
     namespace parser {
-        storm::prism::Program PrismParser::parse(std::string const& filename) {
+        storm::prism::Program PrismParser::parse(std::string const& filename, bool prismCompatibility) {
             // Open file and initialize result.
             std::ifstream inputFileStream;
             storm::utility::openFile(filename, inputFileStream);
@@ -25,7 +24,7 @@ namespace storm {
             // Now try to parse the contents of the file.
             try {
                 std::string fileContent((std::istreambuf_iterator<char>(inputFileStream)), (std::istreambuf_iterator<char>()));
-                result = parseFromString(fileContent, filename);
+                result = parseFromString(fileContent, filename, prismCompatibility);
             } catch(std::exception& e) {
                 // In case of an exception properly close the file before passing exception.
                 storm::utility::closeFile(inputFileStream);
@@ -37,7 +36,7 @@ namespace storm {
             return result;
         }
         
-        storm::prism::Program PrismParser::parseFromString(std::string const& input, std::string const& filename) {
+        storm::prism::Program PrismParser::parseFromString(std::string const& input, std::string const& filename, bool prismCompatibility) {
             PositionIteratorType first(input.begin());
             PositionIteratorType iter = first;
             PositionIteratorType last(input.end());
@@ -47,7 +46,7 @@ namespace storm {
             storm::prism::Program result;
             
             // Create grammar.
-            storm::parser::PrismParser grammar(filename, first);
+            storm::parser::PrismParser grammar(filename, first, prismCompatibility);
             try {
                 // Start first run.
                 bool succeeded = qi::phrase_parse(iter, last, grammar, boost::spirit::ascii::space | qi::lit("//") >> *(qi::char_ - (qi::eol | qi::eoi)) >> (qi::eol | qi::eoi), result);
@@ -74,7 +73,7 @@ namespace storm {
             return result;
         }
         
-        PrismParser::PrismParser(std::string const& filename, Iterator first) : PrismParser::base_type(start), secondRun(false), filename(filename), annotate(first), manager(new storm::expressions::ExpressionManager()), expressionParser(new ExpressionParser(*manager, keywords_, false, false)) {
+        PrismParser::PrismParser(std::string const& filename, Iterator first, bool prismCompatibility) : PrismParser::base_type(start), secondRun(false), prismCompatibility(prismCompatibility), filename(filename), annotate(first), manager(new storm::expressions::ExpressionManager()), expressionParser(new ExpressionParser(*manager, keywords_, false, false)) {
             
             ExpressionParser& expression_ = *expressionParser;
             // Parse simple identifier.
@@ -216,19 +215,19 @@ namespace storm {
             moduleDefinitionList %= +(moduleRenaming(qi::_r1) | moduleDefinition(qi::_r1))[phoenix::push_back(phoenix::bind(&GlobalProgramInformation::modules, qi::_r1), qi::_1)];
             moduleDefinitionList.name("module list");
             
-            start = (qi::eps[phoenix::bind(&PrismParser::removeInitialConstruct, phoenix::ref(*this), qi::_a)]
-                     > *(modelTypeDefinition[phoenix::bind(&PrismParser::setModelType, phoenix::ref(*this), qi::_a, qi::_1)]
-                         | definedConstantDefinition[phoenix::push_back(phoenix::bind(&GlobalProgramInformation::constants, qi::_a), qi::_1)]
-                         | undefinedConstantDefinition[phoenix::push_back(phoenix::bind(&GlobalProgramInformation::constants, qi::_a), qi::_1)]
-                         | formulaDefinition[phoenix::push_back(phoenix::bind(&GlobalProgramInformation::formulas, qi::_a), qi::_1)]
-                         | globalVariableDefinition(qi::_a)
-                         | (moduleRenaming(qi::_a) | moduleDefinition(qi::_a))[phoenix::push_back(phoenix::bind(&GlobalProgramInformation::modules, qi::_a), qi::_1)]
-                         | initialStatesConstruct(qi::_a)
-                         | rewardModelDefinition(qi::_a)[phoenix::push_back(phoenix::bind(&GlobalProgramInformation::rewardModels, qi::_a), qi::_1)]
-                         | labelDefinition[phoenix::push_back(phoenix::bind(&GlobalProgramInformation::labels, qi::_a), qi::_1)] 
-                         | formulaDefinition[phoenix::push_back(phoenix::bind(&GlobalProgramInformation::formulas, qi::_a), qi::_1)]
+            start = (qi::eps[phoenix::bind(&PrismParser::removeInitialConstruct, phoenix::ref(*this), phoenix::ref(globalProgramInformation))]
+                     > *(modelTypeDefinition[phoenix::bind(&PrismParser::setModelType, phoenix::ref(*this), phoenix::ref(globalProgramInformation), qi::_1)]
+                         | definedConstantDefinition[phoenix::push_back(phoenix::bind(&GlobalProgramInformation::constants, phoenix::ref(globalProgramInformation)), qi::_1)]
+                         | undefinedConstantDefinition[phoenix::push_back(phoenix::bind(&GlobalProgramInformation::constants, phoenix::ref(globalProgramInformation)), qi::_1)]
+                         | formulaDefinition[phoenix::push_back(phoenix::bind(&GlobalProgramInformation::formulas, phoenix::ref(globalProgramInformation)), qi::_1)]
+                         | globalVariableDefinition(phoenix::ref(globalProgramInformation))
+                         | (moduleRenaming(phoenix::ref(globalProgramInformation)) | moduleDefinition(phoenix::ref(globalProgramInformation)))[phoenix::push_back(phoenix::bind(&GlobalProgramInformation::modules, phoenix::ref(globalProgramInformation)), qi::_1)]
+                         | initialStatesConstruct(phoenix::ref(globalProgramInformation))
+                         | rewardModelDefinition(phoenix::ref(globalProgramInformation))[phoenix::push_back(phoenix::bind(&GlobalProgramInformation::rewardModels, phoenix::ref(globalProgramInformation)), qi::_1)]
+                         | labelDefinition[phoenix::push_back(phoenix::bind(&GlobalProgramInformation::labels, phoenix::ref(globalProgramInformation)), qi::_1)]
+                         | formulaDefinition[phoenix::push_back(phoenix::bind(&GlobalProgramInformation::formulas, phoenix::ref(globalProgramInformation)), qi::_1)]
                      )
-                     > -(systemCompositionConstruct(qi::_a)) > qi::eoi)[qi::_val = phoenix::bind(&PrismParser::createProgram, phoenix::ref(*this), qi::_a)];
+                     > -(systemCompositionConstruct(phoenix::ref(globalProgramInformation))) > qi::eoi)[qi::_val = phoenix::bind(&PrismParser::createProgram, phoenix::ref(*this), phoenix::ref(globalProgramInformation))];
             start.name("probabilistic program");
             
             // Enable location tracking for important entities.
@@ -267,6 +266,7 @@ namespace storm {
             
             this->secondRun = true;
             this->expressionParser->setIdentifierMapping(&this->identifiers_);
+            this->globalProgramInformation.moveToSecondRun();
         }
         
         void PrismParser::allowDoubleLiterals(bool flag) {
@@ -670,8 +670,9 @@ namespace storm {
                 STORM_LOG_WARN("Program does not specify model type. Implicitly assuming 'mdp'.");
                 finalModelType = storm::prism::Program::ModelType::MDP;
             }
+
             
-            return storm::prism::Program(manager, finalModelType, globalProgramInformation.constants, globalProgramInformation.globalBooleanVariables, globalProgramInformation.globalIntegerVariables, globalProgramInformation.formulas, globalProgramInformation.modules, globalProgramInformation.actionIndices, globalProgramInformation.rewardModels, globalProgramInformation.labels, secondRun && !globalProgramInformation.hasInitialConstruct ? boost::none : boost::make_optional(globalProgramInformation.initialConstruct), globalProgramInformation.systemCompositionConstruct, this->getFilename(), 1, this->secondRun);
+            return storm::prism::Program(manager, finalModelType, globalProgramInformation.constants, globalProgramInformation.globalBooleanVariables, globalProgramInformation.globalIntegerVariables, globalProgramInformation.formulas, globalProgramInformation.modules, globalProgramInformation.actionIndices, globalProgramInformation.rewardModels, globalProgramInformation.labels, secondRun && !globalProgramInformation.hasInitialConstruct ? boost::none : boost::make_optional(globalProgramInformation.initialConstruct), globalProgramInformation.systemCompositionConstruct, prismCompatibility, this->getFilename(), 1, this->secondRun);
         }
         
         void PrismParser::removeInitialConstruct(GlobalProgramInformation& globalProgramInformation) const {

@@ -52,6 +52,7 @@ namespace storm {
             template<typename NewFormulaType>
             CheckTask<NewFormulaType, ValueType> substituteFormula(NewFormulaType const& newFormula) const {
                 CheckTask<NewFormulaType, ValueType> result(newFormula, this->optimizationDirection, this->rewardModel, this->onlyInitialStatesRelevant, this->bound, this->qualitative, this->produceSchedulers, this->hint);
+                result.updateOperatorInformation();
                 return result;
             }
             
@@ -125,6 +126,13 @@ namespace storm {
              */
             storm::OptimizationDirection const& getOptimizationDirection() const {
                 return optimizationDirection.get();
+            }
+            
+            /*!
+             * Sets the optimization direction.
+             */
+            void setOptimizationDirection(storm::OptimizationDirection const& dir) {
+                optimizationDirection = dir;
             }
             
             /*!
@@ -227,8 +235,16 @@ namespace storm {
             ModelCheckerHint const& getHint() const {
                 return *hint;
             }
+            
             ModelCheckerHint& getHint() {
                 return *hint;
+            }
+            
+            /*!
+             * Conversion operator that strips the type of the formula.
+             */
+            operator CheckTask<storm::logic::Formula, ValueType>() const {
+                return this->substituteFormula<storm::logic::Formula>(this->getFormula());
             }
             
         private:

@@ -3,6 +3,8 @@
 
 #include "storm/settings/modules/ModuleSettings.h"
 
+#include "storm/storage/dd/bisimulation/SignatureMode.h"
+
 namespace storm {
     namespace settings {
         namespace modules {
@@ -14,6 +16,14 @@ namespace storm {
             public:
                 // An enumeration of all available bisimulation types.
                 enum class BisimulationType { Strong, Weak };
+                
+                enum class QuotientFormat { Sparse, Dd };
+                
+                enum class ReuseMode { None, BlockNumbers };
+                
+                enum class InitialPartitionMode { Regular, Finer };
+                
+                enum class RefinementMode { Full, ChangedStates };
                 
                 /*!
                  * Creates a new set of bisimulation settings.
@@ -34,6 +44,38 @@ namespace storm {
                  */
                 bool isWeakBisimulationSet() const;
 
+                /*!
+                 * Retrieves the format in which the quotient is to be extracted.
+                 * NOTE: only applies to DD-based bisimulation.
+                 */
+                QuotientFormat getQuotientFormat() const;
+                
+                /*!
+                 * Retrieves whether representatives for blocks are to be used instead of the block numbers.
+                 * NOTE: only applies to DD-based bisimulation.
+                 */
+                bool isUseRepresentativesSet() const;
+                
+                /*!
+                 * Retrieves the mode to compute signatures.
+                 */
+                storm::dd::bisimulation::SignatureMode getSignatureMode() const;
+                
+                /*!
+                 * Retrieves the selected reuse mode.
+                 */
+                ReuseMode getReuseMode() const;
+                
+                /*!
+                 * Retrieves the initial partition mode.
+                 */
+                InitialPartitionMode getInitialPartitionMode() const;
+                
+                /*!
+                 * Retrieves the refinement mode to use.
+                 */
+                RefinementMode getRefinementMode() const;
+                                
                 virtual bool check() const override;
                 
                 // The name of the module.
@@ -42,6 +84,13 @@ namespace storm {
             private:
                 // Define the string names of the options as constants.
                 static const std::string typeOptionName;
+                static const std::string representativeOptionName;
+                static const std::string quotientFormatOptionName;
+                static const std::string signatureModeOptionName;
+                static const std::string reuseOptionName;
+                static const std::string initialPartitionOptionName;
+                static const std::string refinementModeOptionName;
+                static const std::string parallelismModeOptionName;
             };
         } // namespace modules
     } // namespace settings

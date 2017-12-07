@@ -5,7 +5,7 @@
 #include <unordered_map>
 #include <boost/optional.hpp>
 
-#include "storm/models/ModelBase.h"
+#include "storm/models/Model.h"
 #include "storm/models/sparse/StateLabeling.h"
 #include "storm/models/sparse/ChoiceLabeling.h"
 #include "storm/storage/sparse/ModelComponents.h"
@@ -30,8 +30,7 @@ namespace storm {
              * Base class for all sparse models.
              */
             template<class CValueType, class CRewardModelType = StandardRewardModel<CValueType>>
-            class Model : public storm::models::ModelBase {
-            
+            class Model : public storm::models::Model<CValueType> {
             public:
                 typedef CValueType ValueType;
                 typedef CRewardModelType RewardModelType;
@@ -135,7 +134,7 @@ namespace storm {
                  *
                  * @return True iff the model has a reward model with the given name.
                  */
-                bool hasRewardModel(std::string const& rewardModelName) const;
+                virtual bool hasRewardModel(std::string const& rewardModelName) const override;
                 
                 /*!
                  * Retrieves the reward model with the given name, if one exists. Otherwise, an exception is thrown.
@@ -163,7 +162,14 @@ namespace storm {
                  *
                  * @return True iff the model has a unique reward model.
                  */
-                bool hasUniqueRewardModel() const;
+                virtual bool hasUniqueRewardModel() const override;
+                
+                /*!
+                 * Retrieves the name of the unique reward model, if there exists exactly one. Otherwise, an exception is thrown.
+                 *
+                 * @return The name of the unique reward model.
+                 */
+                virtual std::string const& getUniqueRewardModelName() const override;
                 
                 /*!
                  * Retrieves whether the model has at least one reward model.
@@ -191,6 +197,11 @@ namespace storm {
                  * @return true, iff such a reward model existed
                  */
                 bool removeRewardModel(std::string const& rewardModelName);
+                
+                /*!
+                 * Removes all reward models whose name is not in the given set
+                 */
+                void restrictRewardModels(std::set<std::string> const& keptRewardModels);
 
                 /*!
                  * Returns the state labeling associated with this model.
@@ -293,16 +304,7 @@ namespace storm {
                  * @return The choice origins, if they're saved.
                  */
                 boost::optional<std::shared_ptr<storm::storage::sparse::ChoiceOrigins>>&  getOptionalChoiceOrigins();
-                
-                
-                /*!
-                 * Converts the transition rewards of all reward models to state-based rewards. For deterministic models,
-                 * this reduces the rewards to state rewards only. For nondeterminstic models, the reward models will
-                 * contain state rewards and state-action rewards. Note that this transformation does not preserve all
-                 * properties, but it preserves expected rewards.
-                 */
-                virtual void reduceToStateBasedRewards() = 0;
-                                
+                                                
                 /*!
                  * Prints information about the model to the specified stream.
                  *

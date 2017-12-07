@@ -1,13 +1,18 @@
 #include "storm/solver/LpMinMaxLinearEquationSolver.h"
 
+#include "storm/environment/solver/MinMaxSolverEnvironment.h"
 #include "storm/utility/vector.h"
 #include "storm/utility/macros.h"
-#include "storm/exceptions/InvalidSettingsException.h"
-#include "storm/exceptions/InvalidOperationException.h"
+#include "storm/exceptions/InvalidEnvironmentException.h"
 #include "storm/exceptions/UnexpectedException.h"
 
 namespace storm {
     namespace solver {
+        
+        template<typename ValueType>
+        LpMinMaxLinearEquationSolver<ValueType>::LpMinMaxLinearEquationSolver(std::unique_ptr<LinearEquationSolverFactory<ValueType>>&& linearEquationSolverFactory, std::unique_ptr<storm::utility::solver::LpSolverFactory<ValueType>>&& lpSolverFactory) : StandardMinMaxLinearEquationSolver<ValueType>(std::move(linearEquationSolverFactory)), lpSolverFactory(std::move(lpSolverFactory)) {
+            // Intentionally left empty.
+        }
         
         template<typename ValueType>
         LpMinMaxLinearEquationSolver<ValueType>::LpMinMaxLinearEquationSolver(storm::storage::SparseMatrix<ValueType> const& A, std::unique_ptr<LinearEquationSolverFactory<ValueType>>&& linearEquationSolverFactory, std::unique_ptr<storm::utility::solver::LpSolverFactory<ValueType>>&& lpSolverFactory) : StandardMinMaxLinearEquationSolver<ValueType>(A, std::move(linearEquationSolverFactory)), lpSolverFactory(std::move(lpSolverFactory)) {
@@ -20,7 +25,9 @@ namespace storm {
         }
         
         template<typename ValueType>
-        bool LpMinMaxLinearEquationSolver<ValueType>::solveEquations(OptimizationDirection dir, std::vector<ValueType>& x, std::vector<ValueType> const& b) const {
+        bool LpMinMaxLinearEquationSolver<ValueType>::internalSolveEquations(Environment const& env, OptimizationDirection dir, std::vector<ValueType>& x, std::vector<ValueType> const& b) const {
+            
+            STORM_LOG_THROW(env.solver().minMax().getMethod() == MinMaxMethod::LinearProgramming, storm::exceptions::InvalidEnvironmentException, "This min max solver does not support the selected technique.");
             
             // Set up the LP solver
             std::unique_ptr<storm::solver::LpSolver<ValueType>> solver = lpSolverFactory->create("");
@@ -28,8 +35,8 @@ namespace storm {
             
             // Create a variable for each row group
             std::vector<storm::expressions::Variable> variables;
-            variables.reserve(this->A.getRowGroupCount());
-            for (uint64_t rowGroup = 0; rowGroup < this->A.getRowGroupCount(); ++rowGroup) {
+            variables.reserve(this->A->getRowGroupCount());
+            for (uint64_t rowGroup = 0; rowGroup < this->A->getRowGroupCount(); ++rowGroup) {
                 if (this->lowerBound) {
                     if (this->upperBound) {
                         variables.push_back(solver->addBoundedContinuousVariable("x" + std::to_string(rowGroup), this->lowerBound.get(), this->upperBound.get(), storm::utility::one<ValueType>()));
@@ -47,10 +54,10 @@ namespace storm {
             solver->update();
             
             // Add a constraint for each row
-            for (uint64_t rowGroup = 0; rowGroup < this->A.getRowGroupCount(); ++rowGroup) {
-                for (uint64_t row = this->A.getRowGroupIndices()[rowGroup]; row < this->A.getRowGroupIndices()[rowGroup + 1]; ++row) {
+            for (uint64_t rowGroup = 0; rowGroup < this->A->getRowGroupCount(); ++rowGroup) {
+                for (uint64_t row = this->A->getRowGroupIndices()[rowGroup]; row < this->A->getRowGroupIndices()[rowGroup + 1]; ++row) {
                     storm::expressions::Expression rowConstraint = solver->getConstant(b[row]);
-                    for (auto const& entry : this->A.getRow(row)) {
+                    for (auto const& entry : this->A->getRow(row)) {
                         rowConstraint = rowConstraint + (solver->getConstant(entry.getValue()) * variables[entry.getColumn()].getExpression());
                     }
                     if (minimize(dir)) {
@@ -78,14 +85,14 @@ namespace storm {
             
             // If requested, we store the scheduler for retrieval.
             if (this->isTrackSchedulerSet()) {
-                this->schedulerChoices = std::vector<uint_fast64_t>(this->A.getRowGroupCount());
-                for (uint64_t rowGroup = 0; rowGroup < this->A.getRowGroupCount(); ++rowGroup) {
-                    uint64_t row = this->A.getRowGroupIndices()[rowGroup];
+                this->schedulerChoices = std::vector<uint_fast64_t>(this->A->getRowGroupCount());
+                for (uint64_t rowGroup = 0; rowGroup < this->A->getRowGroupCount(); ++rowGroup) {
+                    uint64_t row = this->A->getRowGroupIndices()[rowGroup];
                     uint64_t optimalChoiceIndex = 0;
                     uint64_t currChoice = 0;
-                    ValueType optimalGroupValue = this->A.multiplyRowWithVector(row, x) + b[row];
-                    for (++row, ++currChoice; row < this->A.getRowGroupIndices()[rowGroup + 1]; ++row, ++currChoice) {
-                        ValueType rowValue = this->A.multiplyRowWithVector(row, x) + b[row];
+                    ValueType optimalGroupValue = this->A->multiplyRowWithVector(row, x) + b[row];
+                    for (++row, ++currChoice; row < this->A->getRowGroupIndices()[rowGroup + 1]; ++row, ++currChoice) {
+                        ValueType rowValue = this->A->multiplyRowWithVector(row, x) + b[row];
                         if ((minimize(dir) && rowValue < optimalGroupValue) || (maximize(dir) && rowValue > optimalGroupValue)) {
                             optimalGroupValue = rowValue;
                             optimalChoiceIndex = currChoice;
@@ -104,50 +111,42 @@ namespace storm {
         }
         
         template<typename ValueType>
-        LpMinMaxLinearEquationSolverFactory<ValueType>::LpMinMaxLinearEquationSolverFactory(bool trackScheduler) : StandardMinMaxLinearEquationSolverFactory<ValueType>(MinMaxMethodSelection::LinearProgramming, trackScheduler), lpSolverFactory(std::make_unique<storm::utility::solver::LpSolverFactory<ValueType>>()) {
+        MinMaxLinearEquationSolverRequirements LpMinMaxLinearEquationSolver<ValueType>::getRequirements(Environment const& env, boost::optional<storm::solver::OptimizationDirection> const& direction, bool const& assumeNoInitialScheduler) const {
+            
+            MinMaxLinearEquationSolverRequirements requirements(this->linearEquationSolverFactory->getRequirements(env, LinearEquationSolverTask::Multiply));
+            
+            // In case we need to retrieve a scheduler, the solution has to be unique
+            if (!this->hasUniqueSolution() && this->isTrackSchedulerSet()) {
+                requirements.requireNoEndComponents();
+            }
+            
+            return  requirements;
+        }
+        
+        template<typename ValueType>
+        LpMinMaxLinearEquationSolverFactory<ValueType>::LpMinMaxLinearEquationSolverFactory() : StandardMinMaxLinearEquationSolverFactory<ValueType>(), lpSolverFactory(std::make_unique<storm::utility::solver::LpSolverFactory<ValueType>>()) {
             // Intentionally left empty
         }
         
         template<typename ValueType>
-        LpMinMaxLinearEquationSolverFactory<ValueType>::LpMinMaxLinearEquationSolverFactory(std::unique_ptr<storm::utility::solver::LpSolverFactory<ValueType>>&& lpSolverFactory, bool trackScheduler) : StandardMinMaxLinearEquationSolverFactory<ValueType>(MinMaxMethodSelection::LinearProgramming, trackScheduler), lpSolverFactory(std::move(lpSolverFactory)) {
+        LpMinMaxLinearEquationSolverFactory<ValueType>::LpMinMaxLinearEquationSolverFactory(std::unique_ptr<storm::utility::solver::LpSolverFactory<ValueType>>&& lpSolverFactory) : StandardMinMaxLinearEquationSolverFactory<ValueType>(), lpSolverFactory(std::move(lpSolverFactory)) {
             // Intentionally left empty
         }
        
         template<typename ValueType>
-        LpMinMaxLinearEquationSolverFactory<ValueType>::LpMinMaxLinearEquationSolverFactory(std::unique_ptr<LinearEquationSolverFactory<ValueType>>&& linearEquationSolverFactory, std::unique_ptr<storm::utility::solver::LpSolverFactory<ValueType>>&& lpSolverFactory, bool trackScheduler) : StandardMinMaxLinearEquationSolverFactory<ValueType>(std::move(linearEquationSolverFactory), MinMaxMethodSelection::LinearProgramming, trackScheduler), lpSolverFactory(std::move(lpSolverFactory)) {
+        LpMinMaxLinearEquationSolverFactory<ValueType>::LpMinMaxLinearEquationSolverFactory(std::unique_ptr<LinearEquationSolverFactory<ValueType>>&& linearEquationSolverFactory, std::unique_ptr<storm::utility::solver::LpSolverFactory<ValueType>>&& lpSolverFactory) : StandardMinMaxLinearEquationSolverFactory<ValueType>(std::move(linearEquationSolverFactory)), lpSolverFactory(std::move(lpSolverFactory)) {
             // Intentionally left empty
         }
         
         template<typename ValueType>
-        std::unique_ptr<MinMaxLinearEquationSolver<ValueType>> LpMinMaxLinearEquationSolverFactory<ValueType>::create(storm::storage::SparseMatrix<ValueType> const& matrix) const {
-            STORM_LOG_ASSERT(this->linearEquationSolverFactory, "Linear equation solver factory not initialized.");
+        std::unique_ptr<MinMaxLinearEquationSolver<ValueType>> LpMinMaxLinearEquationSolverFactory<ValueType>::create(Environment const& env) const {
+            STORM_LOG_THROW(env.solver().minMax().getMethod() == MinMaxMethod::LinearProgramming, storm::exceptions::InvalidEnvironmentException, "This min max solver does not support the selected technique.");
             STORM_LOG_ASSERT(this->lpSolverFactory, "Lp solver factory not initialized.");
-            
-            std::unique_ptr<MinMaxLinearEquationSolver<ValueType>> result = std::make_unique<LpMinMaxLinearEquationSolver<ValueType>>(std::move(matrix), this->linearEquationSolverFactory->clone(), this->lpSolverFactory->clone());
-            result->setTrackScheduler(this->isTrackSchedulerSet());
-            return result;
-        }
-        
-        template<typename ValueType>
-        std::unique_ptr<MinMaxLinearEquationSolver<ValueType>> LpMinMaxLinearEquationSolverFactory<ValueType>::create(storm::storage::SparseMatrix<ValueType>&& matrix) const {
             STORM_LOG_ASSERT(this->linearEquationSolverFactory, "Linear equation solver factory not initialized.");
-            STORM_LOG_ASSERT(this->lpSolverFactory, "Lp solver factory not initialized.");
-            
-            std::unique_ptr<MinMaxLinearEquationSolver<ValueType>> result = std::make_unique<LpMinMaxLinearEquationSolver<ValueType>>(std::move(matrix), this->linearEquationSolverFactory->clone(), this->lpSolverFactory->clone());
-            result->setTrackScheduler(this->isTrackSchedulerSet());
+
+            std::unique_ptr<MinMaxLinearEquationSolver<ValueType>> result = std::make_unique<LpMinMaxLinearEquationSolver<ValueType>>(this->linearEquationSolverFactory->clone(), this->lpSolverFactory->clone());
+            result->setRequirementsChecked(this->isRequirementsCheckedSet());
             return result;
-        }
-        
-        template<typename ValueType>
-        void LpMinMaxLinearEquationSolverFactory<ValueType>::setMinMaxMethod(MinMaxMethodSelection const& newMethod) {
-            STORM_LOG_THROW(newMethod == MinMaxMethodSelection::LinearProgramming, storm::exceptions::InvalidOperationException, "The factory can only create linear programming based MinMax solvers.");
-            MinMaxLinearEquationSolverFactory<ValueType>::setMinMaxMethod(newMethod);
-        }
-        
-        template<typename ValueType>
-        void LpMinMaxLinearEquationSolverFactory<ValueType>::setMinMaxMethod(MinMaxMethod const& newMethod) {
-            STORM_LOG_THROW(newMethod == MinMaxMethod::LinearProgramming, storm::exceptions::InvalidOperationException, "The factory can only create linear programming based MinMax solvers.");
-            MinMaxLinearEquationSolverFactory<ValueType>::setMinMaxMethod(newMethod);
         }
         
         template class LpMinMaxLinearEquationSolver<double>;

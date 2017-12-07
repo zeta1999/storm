@@ -6,6 +6,8 @@
 
 #include "storm/adapters/RationalFunctionAdapter.h"
 
+#include "storm/exceptions/InvalidOperationException.h"
+
 namespace storm {
     namespace models {
         namespace symbolic {
@@ -100,6 +102,21 @@ namespace storm {
             }
             
             template <storm::dd::DdType Type, typename ValueType>
+            storm::dd::Add<Type, ValueType> StandardRewardModel<Type, ValueType>::getTotalRewardVector(storm::dd::Add<Type, ValueType> const& stateFilterAdd, storm::dd::Add<Type, ValueType> const& choiceFilterAdd, storm::dd::Add<Type, ValueType> const& transitionMatrix, std::set<storm::expressions::Variable> const& columnVariables) const {
+                storm::dd::Add<Type, ValueType> result = transitionMatrix.getDdManager().template getAddZero<ValueType>();
+                if (this->hasStateRewards()) {
+                    result += stateFilterAdd * choiceFilterAdd * optionalStateRewardVector.get();
+                }
+                if (this->hasStateActionRewards()) {
+                    result += choiceFilterAdd * optionalStateActionRewardVector.get();
+                }
+                if (this->hasTransitionRewards()) {
+                    result += (transitionMatrix * this->getTransitionRewardMatrix()).sumAbstract(columnVariables);
+                }
+                return result;
+            }
+            
+            template <storm::dd::DdType Type, typename ValueType>
             storm::dd::Add<Type, ValueType> StandardRewardModel<Type, ValueType>::getTotalRewardVector(storm::dd::Add<Type, ValueType> const& transitionMatrix, std::set<storm::expressions::Variable> const& columnVariables) const {
                 storm::dd::Add<Type, ValueType> result = transitionMatrix.getDdManager().template getAddZero<ValueType>();
                 if (this->hasStateRewards()) {
@@ -155,6 +172,28 @@ namespace storm {
                     modifiedStateRewardVector = this->optionalStateRewardVector.get() / divisor;
                 }
                 return StandardRewardModel<Type, ValueType>(modifiedStateRewardVector, this->optionalStateActionRewardVector, this->optionalTransitionRewardMatrix);
+            }
+            
+            template <storm::dd::DdType Type, typename ValueType>
+            void StandardRewardModel<Type, ValueType>::reduceToStateBasedRewards(storm::dd::Add<Type, ValueType> const& transitionMatrix, std::set<storm::expressions::Variable> const& rowVariables, std::set<storm::expressions::Variable> const& columnVariables, bool reduceToStateRewards) {
+                if (this->hasTransitionRewards()) {
+                    if (this->hasStateActionRewards()) {
+                        this->optionalStateActionRewardVector.get() += transitionMatrix.multiplyMatrix(this->getTransitionRewardMatrix(), columnVariables);
+                        this->optionalTransitionRewardMatrix = boost::none;
+                    } else {
+                        this->optionalStateActionRewardVector = transitionMatrix.multiplyMatrix(this->getTransitionRewardMatrix(), columnVariables);
+                    }
+                }
+                
+                if (reduceToStateRewards && this->hasStateActionRewards()) {
+                    STORM_LOG_THROW(this->getStateActionRewardVector().getContainedMetaVariables() == rowVariables, storm::exceptions::InvalidOperationException, "The reduction to state rewards is only possible if the state-action rewards do not depend on nondeterminism variables.");
+                    if (this->hasStateRewards()) {
+                        this->optionalStateRewardVector = this->optionalStateRewardVector.get() + this->getStateActionRewardVector();
+                    } else {
+                        this->optionalStateRewardVector = this->getStateActionRewardVector();
+                    }
+                    this->optionalStateActionRewardVector = boost::none;
+                }
             }
             
             template class StandardRewardModel<storm::dd::DdType::CUDD, double>;
