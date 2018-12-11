@@ -7,6 +7,7 @@
 #include "storm/utility/constants.h"
 #include "storm/utility/vector.h"
 #include "storm/utility/bitoperations.h"
+#include "storm/utility/ProgressMeasurement.h"
 #include "storm/exceptions/UnexpectedException.h"
 #include "storm/settings/SettingsManager.h"
 #include "storm/logic/AtomicLabelFormula.h"
@@ -58,10 +59,10 @@ namespace storm {
                 usedHeuristic(storm::settings::getModule<storm::settings::modules::FaultTreeSettings>().getApproximationHeuristic()),
                 generator(dft, *stateGenerationInfo, enableDC, mergeFailedStates),
                 matrixBuilder(!generator.isDeterministicModel()),
-                stateStorage(((dft.stateVectorSize() / 64) + 1) * 64),
+                stateStorage(dft.stateBitVectorSize()),
                 // TODO Matthias: make choosable
                 //explorationQueue(dft.nrElements()+1, 0, 1)
-                explorationQueue(200, 0, 0.9)
+                explorationQueue(200, 0, 0.9, false)
         {
             // Intentionally left empty.
             // TODO Matthias: remove again
@@ -319,6 +320,8 @@ namespace storm {
         void ExplicitDFTModelBuilder<ValueType, StateType>::exploreStateSpace(double approximationThreshold) {
             size_t nrExpandedStates = 0;
             size_t nrSkippedStates = 0;
+            storm::utility::ProgressMeasurement progress("explored states");
+            progress.startNewMeasurement(0);
             // TODO Matthias: do not empty queue every time but break before
             while (!explorationQueue.empty()) {
                 // Get the first state in the queue
@@ -415,6 +418,10 @@ namespace storm {
                         }
                         matrixBuilder.finishRow();
                     }
+                }
+                // Output number of currently explored states
+                if (nrExpandedStates % 100 == 0) {
+                    progress.updateProgress(nrExpandedStates);
                 }
             } // end exploration
 

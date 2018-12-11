@@ -18,6 +18,11 @@
 #include "storm-dft/storage/dft/DFTLayoutInfo.h"
 
 namespace storm {
+    namespace builder {
+        // Forward declaration
+        template<typename T> class DFTBuilder;
+    }
+
     namespace storage {
 
         template<typename ValueType>
@@ -32,11 +37,8 @@ namespace storm {
         };
 
 
-        // Forward declarations
+        // Forward declaration
         template<typename T> class DFTColouring;
-        
-        template<typename T> class DFTBuilder;
-
 
         /**
          * Represents a Dynamic Fault Tree
@@ -76,10 +78,11 @@ namespace storm {
         
             DFT<ValueType> optimize() const;
             
-            void copyElements(std::vector<size_t> elements, DFTBuilder<ValueType> builder) const;
+            void copyElements(std::vector<size_t> elements, storm::builder::DFTBuilder<ValueType> builder) const;
             
-            size_t stateVectorSize() const {
-                return mStateVectorSize;
+            size_t stateBitVectorSize() const {
+                // Ensure multiple of 64
+                return (mStateVectorSize / 64 + (mStateVectorSize % 64 != 0)) * 64;
             }
             
             size_t nrElements() const {
@@ -89,6 +92,10 @@ namespace storm {
             size_t nrBasicElements() const {
                 return mNrOfBEs;
             }
+
+            size_t nrDynamicElements() const;
+
+            size_t nrStaticElements() const;
             
             size_t getTopLevelIndex() const {
                 return mTopLevelIndex;
@@ -198,7 +205,14 @@ namespace storm {
             }
 
             bool canHaveNondeterminism() const;
-            
+
+            /*!
+             * Check if the DFT is well-formed.
+             * @param stream Output stream where warnings about non-well-formed parts are written.
+             * @return True iff the DFT is well-formed.
+             */
+            bool checkWellFormedness(std::ostream& stream) const;
+
             uint64_t maxRank() const;
             
             std::vector<DFT<ValueType>> topModularisation() const;
@@ -274,6 +288,8 @@ namespace storm {
             DFTLayoutInfo const& getElementLayoutInfo(size_t id) const {
                 return mLayoutInfo.at(id);
             }
+
+            void writeStatsToStream(std::ostream& stream) const;
 
         private:
             std::tuple<std::vector<size_t>, std::vector<size_t>, std::vector<size_t>> getSortedParentAndDependencyIds(size_t index) const;

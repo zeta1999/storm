@@ -102,7 +102,16 @@ namespace storm {
              * @param moduleSettings The settings of the module to add.
              */
             void addModule(std::unique_ptr<modules::ModuleSettings>&& moduleSettings, bool doRegister = true);
-            
+
+            /*!
+             * Checks whether the module with the given name exists.
+             *
+             * @param moduleName The name of the module to search.
+             * @param checkHidden If true hidden modules are included in the search.
+             * @return True iff the module exists.
+             */
+            bool hasModule(std::string const& moduleName, bool checkHidden = false) const;
+
             /*!
              * Retrieves the settings of the module with the given name.
              *
@@ -259,6 +268,20 @@ namespace storm {
         SettingsType const& getModule() {
             static_assert(std::is_base_of<storm::settings::modules::ModuleSettings, SettingsType>::value, "Template argument must be derived from ModuleSettings");
             return dynamic_cast<SettingsType const&>(manager().getModule(SettingsType::moduleName));
+        }
+        
+        
+        /*!
+         * Returns true if the given module is registered.
+         *
+         */
+        template<typename SettingsType>
+        bool hasModule() {
+            static_assert(std::is_base_of<storm::settings::modules::ModuleSettings, SettingsType>::value, "Template argument must be derived from ModuleSettings");
+            if (manager().hasModule(SettingsType::moduleName)) {
+                return dynamic_cast<SettingsType const*>(&(manager().getModule(SettingsType::moduleName))) != nullptr;
+            }
+            return false;
         }
         
         /*!

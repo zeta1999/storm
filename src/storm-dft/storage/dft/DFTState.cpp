@@ -6,7 +6,7 @@ namespace storm {
     namespace storage {
 
         template<typename ValueType>
-        DFTState<ValueType>::DFTState(DFT<ValueType> const& dft, DFTStateGenerationInfo const& stateGenerationInfo, size_t id) : mStatus(dft.stateVectorSize()), mId(id), mPseudoState(false), mDft(dft), mStateGenerationInfo(stateGenerationInfo) {
+        DFTState<ValueType>::DFTState(DFT<ValueType> const& dft, DFTStateGenerationInfo const& stateGenerationInfo, size_t id) : mStatus(dft.stateBitVectorSize()), mId(id), mPseudoState(false), mDft(dft), mStateGenerationInfo(stateGenerationInfo) {
             // TODO Matthias: use construct()
             
             // Initialize uses
@@ -280,7 +280,7 @@ namespace storm {
 
         template<typename ValueType>
         bool DFTState<ValueType>::isActive(size_t id) const {
-            STORM_LOG_ASSERT(mDft.isRepresentative(id), "Element is no representative.");
+            STORM_LOG_ASSERT(mDft.isRepresentative(id), "Element " << mDft.getElement(id)->toString() << " is no representative.");
             return mStatus[mStateGenerationInfo.getSpareActivationIndex(id)];
         }
             

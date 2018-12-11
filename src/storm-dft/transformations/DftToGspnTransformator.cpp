@@ -5,622 +5,1299 @@
 namespace storm {
     namespace transformations {
         namespace dft {
-            
+
             // Prevent some magic constants
-            static constexpr const uint64_t defaultPriority = 1;
             static constexpr const uint64_t defaultCapacity = 1;
 
-            template <typename ValueType>
-            DftToGspnTransformator<ValueType>::DftToGspnTransformator(storm::storage::DFT<ValueType> const& dft) : mDft(dft) {
+            template<typename ValueType>
+            DftToGspnTransformator<ValueType>::DftToGspnTransformator(storm::storage::DFT<ValueType> const &dft) : mDft(
+                    dft) {
                 // Intentionally left empty.
             }
 
-            template <typename ValueType>
-            void DftToGspnTransformator<ValueType>::transform() {
-				
+            template<typename ValueType>
+            void DftToGspnTransformator<ValueType>::transform(std::map<uint64_t, uint64_t> const &priorities,
+                                                              std::set<uint64_t> const &dontCareElements, bool smart,
+                                                              bool mergeDCFailed, bool extendPriorities) {
+                this->priorities = priorities;
+                this->dontCareElements = dontCareElements;
+                this->smart = smart;
+                this->mergedDCFailed = mergeDCFailed;
+                this->dontCarePriority = 1;
+                this->extendedPriorities = extendPriorities;
                 builder.setGspnName("DftToGspnTransformation");
-				
-				// Loop through every DFT element and draw them as a GSPN.
-				drawGSPNElements();
 
-				// Draw restrictions into the GSPN (i.e. SEQ or MUTEX).
-				//drawGSPNRestrictions();
+                // Translate all GSPN elements
+                translateGSPNElements();
+
+                // Create initial template
+                // TODO
             }
-            
+
+            template<typename ValueType>
+            std::map<uint64_t, uint64_t> DftToGspnTransformator<ValueType>::computePriorities(bool extendedPrio) {
+                std::map<uint64_t, uint64_t> priorities;
+                if (!extendedPrio) {
+                    // Set priority for PDEP and FDEP according to Monolithic MA semantics
+                    uint64_t dependency_priority = 2;
+                    for (std::size_t i = 0; i < mDft.nrElements(); i++) {
+                        if (mDft.getElement(i)->type() == storm::storage::DFTElementType::PDEP)
+                            priorities[i] = dependency_priority;
+                        else
+                            priorities[i] = (-(mDft.getElement(i)->rank()) + mDft.maxRank()) * 2 + 5;
+                    }
+                } else {
+                    // Define some variables
+                    u_int64_t maxNrOfChildren = 0;
+                    u_int64_t maxNrDependentEvents = 0;
+                    // Iterate over all elements of the DFT and sort them into the list
+                    std::list<size_t> elementList;
+                    for (std::size_t i = 0; i < mDft.nrElements(); i++) {
+                        if (mDft.getElement(i)->type() == storm::storage::DFTElementType::PDEP) {
+                            // For dependencies, get the maximal number of dependent events
+                            auto dependency = std::static_pointer_cast<storm::storage::DFTDependency<ValueType> const>(
+                                    mDft.getElement(i));
+                            uint64_t nrDependentEvents = (dependency->dependentEvents()).size();
+                            if (nrDependentEvents > maxNrDependentEvents) {
+                                maxNrDependentEvents = nrDependentEvents;
+                            }
+                        }
+                        // Get the maximum number of children/ SPAREs need additional transitions
+
+                        u_int64_t nrChildren = mDft.getElement(i)->nrChildren();
+                        if (mDft.getElement(i)->type() == storm::storage::DFTElementType::SPARE) {
+                            nrChildren *= 4;
+                        }
+                        if (maxNrOfChildren < nrChildren) {
+                            maxNrOfChildren = nrChildren;
+                        }
+                        // Organize the elements according to their rank
+                        if (!elementList.empty()) {
+                            std::list<size_t>::iterator it = elementList.begin();
+                            // Make sure dependencies are always in the front
+                            while ((mDft.getElement(*it)->rank()) < (mDft.getElement(i)->rank())
+                                   || mDft.getElement(*it)->type() == storm::storage::DFTElementType::PDEP) {
+                                it++;
+                            }
+                            elementList.insert(it, i);
+                        } else {
+                            elementList.push_back(i);
+                        }
+                    }
+                    // Get the necessary length for priority intervals
+                    // Note that additional priorities are necessary
+                    u_int64_t priorityIntervalLength = std::max(maxNrDependentEvents, maxNrOfChildren) + 4;
+
+                    // Define a running variable for the current priority
+                    // Initialize it with an offset for the DC priorities + first interval length as prios give upper interval limit
+                    u_int64_t currentPrio = mDft.nrElements() + priorityIntervalLength;
+                    //TODO Dependencies have to have same priority
+                    for (std::list<size_t>::iterator it = elementList.begin(); it != elementList.end(); ++it) {
+                        priorities[*it] = currentPrio;
+                        currentPrio += priorityIntervalLength;
+                    }
+                }
+
+                return priorities;
+            }
+
+
             template<typename ValueType>
             uint64_t DftToGspnTransformator<ValueType>::toplevelFailedPlaceId() {
-                assert(failedNodes.size() > mDft.getTopLevelIndex());
-                return failedNodes[mDft.getTopLevelIndex()];
+                STORM_LOG_ASSERT(failedPlaces.size() > mDft.getTopLevelIndex(),
+                                 "Failed place for top level element does not exist.");
+                return failedPlaces.at(mDft.getTopLevelIndex());
             }
-            
-			template <typename ValueType>
-            void DftToGspnTransformator<ValueType>::drawGSPNElements() {
-                
-                
-				// Loop through every DFT element and draw them as a GSPN.
-				for (std::size_t i = 0; i < mDft.nrElements(); i++) {
-					auto dftElement = mDft.getElement(i);
-                    bool isRepresentative = mDft.isRepresentative(i);
-                    
-					// Check which type the element is and call the corresponding drawing-function.
-					switch (dftElement->type()) {
-						case storm::storage::DFTElementType::AND:
-							drawAND(std::static_pointer_cast<storm::storage::DFTAnd<ValueType> const>(dftElement), isRepresentative);
-							break;
-						case storm::storage::DFTElementType::OR:
-							drawOR(std::static_pointer_cast<storm::storage::DFTOr<ValueType> const>(dftElement), isRepresentative);
-							break;
-						case storm::storage::DFTElementType::VOT:
-							drawVOT(std::static_pointer_cast<storm::storage::DFTVot<ValueType> const>(dftElement), isRepresentative);
-							break;
-						case storm::storage::DFTElementType::PAND:
-							drawPAND(std::static_pointer_cast<storm::storage::DFTPand<ValueType> const>(dftElement), isRepresentative);
-							break;
-						case storm::storage::DFTElementType::SPARE:
-							drawSPARE(std::static_pointer_cast<storm::storage::DFTSpare<ValueType> const>(dftElement), isRepresentative);
-							break;
-						case storm::storage::DFTElementType::POR:
-							drawPOR(std::static_pointer_cast<storm::storage::DFTPor<ValueType> const>(dftElement), isRepresentative);
-							break;
-						case storm::storage::DFTElementType::SEQ:
-                            drawSeq(std::static_pointer_cast<storm::storage::DFTSeq<ValueType> const>(dftElement));
-                            break;
-						case storm::storage::DFTElementType::MUTEX:
-							// No method call needed here. MUTEX only consists of restrictions, which are handled later.
-							break;
-						case storm::storage::DFTElementType::BE:
-							drawBE(std::static_pointer_cast<storm::storage::DFTBE<ValueType> const>(dftElement), isRepresentative);
-							break;
-						case storm::storage::DFTElementType::CONSTF:
-							drawCONSTF(dftElement, isRepresentative);
-							break;
-						case storm::storage::DFTElementType::CONSTS:
-							drawCONSTS(dftElement, isRepresentative);
-							break;
-						case storm::storage::DFTElementType::PDEP:
-                            drawPDEP(std::static_pointer_cast<storm::storage::DFTDependency<ValueType> const>(dftElement));
-							break;
-						default:
-							STORM_LOG_ASSERT(false, "DFT type unknown.");
-							break;
-					}
-				}
-                
-			}
-            
-            template <typename ValueType>
-            void DftToGspnTransformator<ValueType>::drawBE(std::shared_ptr<storm::storage::DFTBE<ValueType> const> dftBE, bool isRepresentative) {
-                uint64_t beActive = builder.addPlace(defaultCapacity, isBEActive(dftBE) ? 1 : 0, dftBE->name() + STR_ACTIVATED);
-                activeNodes.emplace(dftBE->id(), beActive);
-                uint64_t beFailed = builder.addPlace(defaultCapacity, 0, dftBE->name() + STR_FAILED);
 
+            template<typename ValueType>
+            gspn::GSPN *DftToGspnTransformator<ValueType>::obtainGSPN() {
+                return builder.buildGspn();
+            }
+
+            template<typename ValueType>
+            void DftToGspnTransformator<ValueType>::translateGSPNElements() {
+                // Loop through every DFT element and create its corresponding GSPN template.
+                for (std::size_t i = 0; i < mDft.nrElements(); i++) {
+                    auto dftElement = mDft.getElement(i);
+
+                    // Check which type the element is and call the corresponding translate-function.
+                    switch (dftElement->type()) {
+                        case storm::storage::DFTElementType::BE:
+                            translateBE(std::static_pointer_cast<storm::storage::DFTBE<ValueType> const>(dftElement));
+                            break;
+                        case storm::storage::DFTElementType::CONSTF:
+                            translateCONSTF(dftElement);
+                            break;
+                        case storm::storage::DFTElementType::CONSTS:
+                            translateCONSTS(dftElement);
+                            break;
+                        case storm::storage::DFTElementType::AND:
+                            translateAND(std::static_pointer_cast<storm::storage::DFTAnd<ValueType> const>(dftElement));
+                            break;
+                        case storm::storage::DFTElementType::OR:
+                            translateOR(std::static_pointer_cast<storm::storage::DFTOr<ValueType> const>(dftElement));
+                            break;
+                        case storm::storage::DFTElementType::VOT:
+                            translateVOT(std::static_pointer_cast<storm::storage::DFTVot<ValueType> const>(dftElement));
+                            break;
+                        case storm::storage::DFTElementType::PAND:
+                            translatePAND(
+                                    std::static_pointer_cast<storm::storage::DFTPand<ValueType> const>(dftElement),
+                                    std::static_pointer_cast<storm::storage::DFTPand<ValueType> const>(
+                                            dftElement)->isInclusive());
+                            break;
+                        case storm::storage::DFTElementType::POR:
+                            translatePOR(std::static_pointer_cast<storm::storage::DFTPor<ValueType> const>(dftElement),
+                                         std::static_pointer_cast<storm::storage::DFTPor<ValueType> const>(
+                                                 dftElement)->isInclusive());
+                            break;
+                        case storm::storage::DFTElementType::SPARE:
+                            translateSPARE(
+                                    std::static_pointer_cast<storm::storage::DFTSpare<ValueType> const>(dftElement));
+                            break;
+                        case storm::storage::DFTElementType::PDEP:
+                            translatePDEP(std::static_pointer_cast<storm::storage::DFTDependency<ValueType> const>(
+                                    dftElement));
+                            break;
+                        case storm::storage::DFTElementType::SEQ:
+                            translateSeq(std::static_pointer_cast<storm::storage::DFTSeq<ValueType> const>(dftElement));
+                            break;
+                        default:
+                            STORM_LOG_ASSERT(false, "DFT type " << dftElement->type() << " unknown.");
+                            break;
+                    }
+                }
+
+            }
+
+            template<typename ValueType>
+            void DftToGspnTransformator<ValueType>::translateBE(
+                    std::shared_ptr<storm::storage::DFTBE<ValueType> const> dftBE) {
                 double xcenter = mDft.getElementLayoutInfo(dftBE->id()).x;
                 double ycenter = mDft.getElementLayoutInfo(dftBE->id()).y;
-                builder.setPlaceLayoutInfo(beActive, storm::gspn::LayoutInfo(xcenter - 3.0, ycenter));
-                builder.setPlaceLayoutInfo(beFailed, storm::gspn::LayoutInfo(xcenter + 3.0, ycenter));
 
-                
-                uint64_t disabledNode = 0;
-                if (!smart || dftBE->nrRestrictions() > 0) {
-                    disabledNode = addDisabledPlace(dftBE);
-                }
-                
-                uint64_t unavailableNode = 0;
-                if (!smart || isRepresentative) {
-                    unavailableNode = addUnavailableNode(dftBE, storm::gspn::LayoutInfo(xcenter+9.0, ycenter));
-                }
-                
-                assert(failedNodes.size() == dftBE->id());
-                failedNodes.push_back(beFailed);
-                uint64_t tActive = builder.addTimedTransition(defaultPriority, dftBE->activeFailureRate(), dftBE->name() + "_activeFailing");
+                uint64_t failedPlace = addFailedPlace(dftBE, storm::gspn::LayoutInfo(xcenter + 3.0, ycenter));
+
+                uint64_t activePlace = builder.addPlace(defaultCapacity, isActiveInitially(dftBE) ? 1 : 0,
+                                                        dftBE->name() + STR_ACTIVATED);
+                activePlaces.emplace(dftBE->id(), activePlace);
+                builder.setPlaceLayoutInfo(activePlace, storm::gspn::LayoutInfo(xcenter - 3.0, ycenter));
+                uint64_t tActive = builder.addTimedTransition(getFailPriority(dftBE), dftBE->activeFailureRate(),
+                                                              dftBE->name() + "_activeFailing");
                 builder.setTransitionLayoutInfo(tActive, storm::gspn::LayoutInfo(xcenter, ycenter + 3.0));
-                builder.addInputArc(beActive, tActive);
-                builder.addInhibitionArc(beFailed, tActive);
-                builder.addOutputArc(tActive, beActive);
-                builder.addOutputArc(tActive, beFailed);
-                uint64_t tPassive = builder.addTimedTransition(defaultPriority, dftBE->passiveFailureRate(), dftBE->name() + "_passiveFailing");
+                builder.addInputArc(activePlace, tActive);
+                builder.addInhibitionArc(failedPlace, tActive);
+                builder.addOutputArc(tActive, activePlace);
+                builder.addOutputArc(tActive, failedPlace);
+
+                uint64_t tPassive = builder.addTimedTransition(getFailPriority(dftBE), dftBE->passiveFailureRate(),
+                                                               dftBE->name() + "_passiveFailing");
                 builder.setTransitionLayoutInfo(tPassive, storm::gspn::LayoutInfo(xcenter, ycenter - 3.0));
-                builder.addInhibitionArc(beActive, tPassive);
-                builder.addInhibitionArc(beFailed, tPassive);
-                builder.addOutputArc(tPassive, beFailed);
-                
-                if (!smart || dftBE->nrRestrictions() > 0) {
-                    builder.addInhibitionArc(disabledNode, tActive);
-                    builder.addInhibitionArc(disabledNode, tPassive);
+                builder.addInhibitionArc(activePlace, tPassive);
+                builder.addInhibitionArc(failedPlace, tPassive);
+                builder.addOutputArc(tPassive, failedPlace);
+
+                if (dontCareElements.count(dftBE->id()) && dftBE->id() != mDft.getTopLevelIndex()) {
+                    u_int64_t tDontCare = addDontcareTransition(dftBE,
+                                                                storm::gspn::LayoutInfo(xcenter + 12.0, ycenter));
+                    if (!mergedDCFailed) {
+                        uint64_t dontCarePlace = builder.addPlace(1, 0, dftBE->name() + STR_DONTCARE);
+                        builder.setPlaceLayoutInfo(dontCarePlace,
+                                                   storm::gspn::LayoutInfo(xcenter + 12.0, ycenter + 5.0));
+                        builder.addInhibitionArc(dontCarePlace, tDontCare);
+                        builder.addOutputArc(tDontCare, dontCarePlace);
+
+                        builder.addInhibitionArc(dontCarePlace, tActive);
+                        builder.addInhibitionArc(dontCarePlace, tPassive);
+
+                        //Propagation for dependencies
+                        if (!smart || dftBE->hasIngoingDependencies()) {
+                            uint64_t dependencyPropagationPlace = builder.addPlace(1, 0,
+                                                                                   dftBE->name() + "_dependency_prop");
+                            dependencyPropagationPlaces.emplace(dftBE->id(), dependencyPropagationPlace);
+                            builder.setPlaceLayoutInfo(dependencyPropagationPlace,
+                                                       storm::gspn::LayoutInfo(xcenter + 10.0, ycenter - 5.0));
+                            uint64_t tPropagationFailed = builder.addImmediateTransition(dontCarePriority, 0.0,
+                                                                                         dftBE->name() + "_prop_fail");
+                            builder.setTransitionLayoutInfo(tPropagationFailed,
+                                                            storm::gspn::LayoutInfo(xcenter + 8.0, ycenter));
+                            builder.addInhibitionArc(dependencyPropagationPlace, tPropagationFailed);
+                            builder.addInputArc(failedPlace, tPropagationFailed);
+                            builder.addOutputArc(tPropagationFailed, failedPlace);
+                            builder.addOutputArc(tPropagationFailed, dependencyPropagationPlace);
+                            uint64_t tPropagationDontCare = builder.addImmediateTransition(dontCarePriority, 0.0,
+                                                                                           dftBE->name() +
+                                                                                           "_prop_dontCare");
+                            builder.setTransitionLayoutInfo(tPropagationDontCare,
+                                                            storm::gspn::LayoutInfo(xcenter + 10.0, ycenter));
+                            builder.addInhibitionArc(dependencyPropagationPlace, tPropagationDontCare);
+                            builder.addInputArc(dependencyPropagationPlace, tPropagationDontCare);
+                            builder.addOutputArc(tPropagationDontCare, dontCarePlace);
+                            builder.addOutputArc(tPropagationDontCare, dependencyPropagationPlace);
+                        }
+                    } else {
+                        builder.addInhibitionArc(failedPlace, tDontCare);
+                        builder.addOutputArc(tDontCare, failedPlace);
+                    }
+
                 }
-                
-                if (!smart || isRepresentative) {
-                    builder.addOutputArc(tActive, unavailableNode);
-                    builder.addOutputArc(tPassive, unavailableNode);
+
+                if (!smart || dftBE->nrRestrictions() > 0) {
+                    uint64_t disabledPlace = addDisabledPlace(dftBE, storm::gspn::LayoutInfo(xcenter - 9.0, ycenter));
+                    builder.addInhibitionArc(disabledPlace, tActive);
+                    builder.addInhibitionArc(disabledPlace, tPassive);
+                }
+
+                if (!smart || mDft.isRepresentative(dftBE->id())) {
+                    uint64_t unavailablePlace = addUnavailablePlace(dftBE,
+                                                                    storm::gspn::LayoutInfo(xcenter + 9.0, ycenter));
+                    builder.addOutputArc(tActive, unavailablePlace);
+                    builder.addOutputArc(tPassive, unavailablePlace);
+                }
+
+                if (extendedPriorities)
+                    dontCarePriority++;
+            }
+
+            template<typename ValueType>
+            void DftToGspnTransformator<ValueType>::translateCONSTF(
+                    std::shared_ptr<storm::storage::DFTElement<ValueType> const> dftConstF) {
+                double xcenter = mDft.getElementLayoutInfo(dftConstF->id()).x;
+                double ycenter = mDft.getElementLayoutInfo(dftConstF->id()).y;
+
+                addFailedPlace(dftConstF, storm::gspn::LayoutInfo(xcenter, ycenter - 3.0), true);
+
+                if (!smart || mDft.isRepresentative(dftConstF->id())) {
+                    addUnavailablePlace(dftConstF, storm::gspn::LayoutInfo(xcenter, ycenter + 3.0), false);
                 }
             }
-			
-			template <typename ValueType>
-            void DftToGspnTransformator<ValueType>::drawAND(std::shared_ptr<storm::storage::DFTAnd<ValueType> const> dftAnd, bool isRepresentative) {
-                uint64_t nodeFailed = builder.addPlace(defaultCapacity, 0, dftAnd->name() + STR_FAILED);
-                assert(failedNodes.size() == dftAnd->id());
-                failedNodes.push_back(nodeFailed);
 
+            template<typename ValueType>
+            void DftToGspnTransformator<ValueType>::translateCONSTS(
+                    std::shared_ptr<storm::storage::DFTElement<ValueType> const> dftConstS) {
+                double xcenter = mDft.getElementLayoutInfo(dftConstS->id()).x;
+                double ycenter = mDft.getElementLayoutInfo(dftConstS->id()).y;
+
+                size_t capacity = 0; // It cannot contain a token, because it cannot fail.
+
+                uint64_t failedPlace = builder.addPlace(capacity, 0, dftConstS->name() + STR_FAILED);
+                assert(failedPlaces.size() == dftConstS->id());
+                failedPlaces.push_back(failedPlace);
+                builder.setPlaceLayoutInfo(failedPlace, storm::gspn::LayoutInfo(xcenter, ycenter - 3.0));
+
+                if (!smart || mDft.isRepresentative(dftConstS->id())) {
+                    uint64_t unavailablePlace = builder.addPlace(capacity, 0, dftConstS->name() + "_unavail");
+                    unavailablePlaces.emplace(dftConstS->id(), unavailablePlace);
+                    builder.setPlaceLayoutInfo(unavailablePlace, storm::gspn::LayoutInfo(xcenter, ycenter + 3.0));
+                }
+            }
+
+            template<typename ValueType>
+            void DftToGspnTransformator<ValueType>::translateAND(
+                    std::shared_ptr<storm::storage::DFTAnd<ValueType> const> dftAnd) {
                 double xcenter = mDft.getElementLayoutInfo(dftAnd->id()).x;
                 double ycenter = mDft.getElementLayoutInfo(dftAnd->id()).y;
-                builder.setPlaceLayoutInfo(nodeFailed, storm::gspn::LayoutInfo(xcenter, ycenter-3.0));
 
-                uint64_t unavailableNode = 0;
-                if (isRepresentative) {
-                    unavailableNode = addUnavailableNode(dftAnd, storm::gspn::LayoutInfo(xcenter+6.0, ycenter-3.0));
+                uint64_t failedPlace = addFailedPlace(dftAnd, storm::gspn::LayoutInfo(xcenter, ycenter - 3.0));
+
+                uint64_t tFailed = builder.addImmediateTransition(getFailPriority(dftAnd), 0.0,
+                                                                  dftAnd->name() + STR_FAILING);
+                builder.setTransitionLayoutInfo(tFailed, storm::gspn::LayoutInfo(xcenter, ycenter + 3.0));
+                builder.addInhibitionArc(failedPlace, tFailed);
+                builder.addOutputArc(tFailed, failedPlace);
+
+                if (dontCareElements.count(dftAnd->id())) {
+                    if (dftAnd->id() != mDft.getTopLevelIndex()) {
+                        u_int64_t tDontCare = addDontcareTransition(dftAnd,
+                                                                    storm::gspn::LayoutInfo(xcenter + 16.0, ycenter));
+                        if (!mergedDCFailed) {
+                            uint64_t dontCarePlace = builder.addPlace(1, 0, dftAnd->name() + STR_DONTCARE);
+                            builder.setPlaceLayoutInfo(dontCarePlace,
+                                                       storm::gspn::LayoutInfo(xcenter + 16.0, ycenter + 4.0));
+                            builder.addInhibitionArc(dontCarePlace, tDontCare);
+                            builder.addOutputArc(tDontCare, dontCarePlace);
+                            //Propagation
+                            uint64_t propagationPlace = builder.addPlace(1, 0, dftAnd->name() + "_prop");
+                            builder.setPlaceLayoutInfo(propagationPlace,
+                                                       storm::gspn::LayoutInfo(xcenter + 12.0, ycenter + 8.0));
+                            uint64_t tPropagationFailed = builder.addImmediateTransition(dontCarePriority, 0.0,
+                                                                                         dftAnd->name() + "_prop_fail");
+                            builder.setTransitionLayoutInfo(tPropagationFailed,
+                                                            storm::gspn::LayoutInfo(xcenter + 10.0, ycenter + 6.0));
+                            builder.addInhibitionArc(propagationPlace, tPropagationFailed);
+                            builder.addInputArc(failedPlace, tPropagationFailed);
+                            builder.addOutputArc(tPropagationFailed, failedPlace);
+                            builder.addOutputArc(tPropagationFailed, propagationPlace);
+                            uint64_t tPropagationDontCare = builder.addImmediateTransition(dontCarePriority, 0.0,
+                                                                                           dftAnd->name() +
+                                                                                           "_prop_dontCare");
+                            builder.setTransitionLayoutInfo(tPropagationDontCare,
+                                                            storm::gspn::LayoutInfo(xcenter + 14.0, ycenter + 6.0));
+                            builder.addInhibitionArc(propagationPlace, tPropagationDontCare);
+                            builder.addInputArc(dontCarePlace, tPropagationDontCare);
+                            builder.addOutputArc(tPropagationDontCare, dontCarePlace);
+                            builder.addOutputArc(tPropagationDontCare, propagationPlace);
+                            for (auto const &child : dftAnd->children()) {
+                                if (dontCareElements.count(child->id())) {
+                                    u_int64_t childDontCare = dontcareTransitions.at(child->id());
+                                    builder.addInputArc(propagationPlace, childDontCare);
+                                    builder.addOutputArc(childDontCare, propagationPlace);
+                                }
+                            }
+                        } else {
+                            builder.addInhibitionArc(failedPlace, tDontCare);
+                            builder.addOutputArc(tDontCare, failedPlace);
+                            for (auto const &child : dftAnd->children()) {
+                                if (dontCareElements.count(child->id())) {
+                                    u_int64_t childDontCare = dontcareTransitions.at(child->id());
+                                    builder.addInputArc(failedPlace, childDontCare);
+                                    builder.addOutputArc(childDontCare, failedPlace);
+                                }
+                            }
+                        }
+                    } else {
+                        // If AND is TLE, simple failure propagation suffices
+                        for (auto const &child : dftAnd->children()) {
+                            if (dontCareElements.count(child->id())) {
+                                u_int64_t childDontCare = dontcareTransitions.at(child->id());
+                                builder.addInputArc(failedPlace, childDontCare);
+                                builder.addOutputArc(childDontCare, failedPlace);
+                            }
+                        }
+                    }
                 }
 
-                
-                uint64_t tAndFailed = builder.addImmediateTransition( getFailPriority(dftAnd)  , 0.0, dftAnd->name() + STR_FAILING );
-                builder.setTransitionLayoutInfo(tAndFailed, storm::gspn::LayoutInfo(xcenter, ycenter+3.0));
-                builder.addInhibitionArc(nodeFailed, tAndFailed);
-                builder.addOutputArc(tAndFailed, nodeFailed);
-                if (isRepresentative) {
-                    builder.addOutputArc(tAndFailed, unavailableNode);
+                if (!smart || mDft.isRepresentative(dftAnd->id())) {
+                    uint64_t unavailablePlace = addUnavailablePlace(dftAnd, storm::gspn::LayoutInfo(xcenter + 6.0,
+                                                                                                    ycenter - 3.0));
+                    builder.addOutputArc(tFailed, unavailablePlace);
                 }
-                for(auto const& child : dftAnd->children()) {
-                    assert(failedNodes.size() > child->id());
-                    builder.addInputArc(failedNodes[child->id()], tAndFailed);
-                    builder.addOutputArc(tAndFailed, failedNodes[child->id()]);
+
+                for (auto const &child : dftAnd->children()) {
+                    builder.addInputArc(getFailedPlace(child), tFailed);
+                    builder.addOutputArc(tFailed, getFailedPlace(child));
                 }
-			}
+                if (extendedPriorities)
+                    dontCarePriority++;
+            }
 
-			template <typename ValueType>
-            void DftToGspnTransformator<ValueType>::drawOR(std::shared_ptr<storm::storage::DFTOr<ValueType> const> dftOr, bool isRepresentative) {
-                uint64_t nodeFailed = builder.addPlace(defaultCapacity, 0, dftOr->name() + STR_FAILED);
-                assert(failedNodes.size() == dftOr->id());
-                failedNodes.push_back(nodeFailed);
-
+            template<typename ValueType>
+            void DftToGspnTransformator<ValueType>::translateOR(
+                    std::shared_ptr<storm::storage::DFTOr<ValueType> const> dftOr) {
                 double xcenter = mDft.getElementLayoutInfo(dftOr->id()).x;
                 double ycenter = mDft.getElementLayoutInfo(dftOr->id()).y;
-                builder.setPlaceLayoutInfo(nodeFailed, storm::gspn::LayoutInfo(xcenter, ycenter-3.0));
 
-                uint64_t unavailableNode = 0;
-                if (isRepresentative) {
-                    unavailableNode = addUnavailableNode(dftOr, storm::gspn::LayoutInfo(xcenter+6.0, ycenter-3.0));
-                }
-                
-                uint64_t i = 0;
-                for (auto const& child : dftOr->children()) {
-                    uint64_t tNodeFailed = builder.addImmediateTransition( getFailPriority(dftOr), 0.0, dftOr->name() + STR_FAILING + std::to_string(i) );
-                    builder.setTransitionLayoutInfo(tNodeFailed, storm::gspn::LayoutInfo(xcenter-5.0+i*3.0, ycenter+3.0));
-                    builder.addInhibitionArc(nodeFailed, tNodeFailed);
-                    builder.addOutputArc(tNodeFailed, nodeFailed);
-                    if (isRepresentative) {
-                        builder.addOutputArc(tNodeFailed, unavailableNode);
+                uint64_t failedPlace = addFailedPlace(dftOr, storm::gspn::LayoutInfo(xcenter, ycenter - 3.0));
+
+                if (dontCareElements.count(dftOr->id())) {
+                    if (dftOr->id() != mDft.getTopLevelIndex()) {
+                        u_int64_t tDontCare = addDontcareTransition(dftOr,
+                                                                    storm::gspn::LayoutInfo(xcenter + 16.0, ycenter));
+                        if (!mergedDCFailed) {
+                            uint64_t dontCarePlace = builder.addPlace(1, 0, dftOr->name() + STR_DONTCARE);
+                            builder.setPlaceLayoutInfo(dontCarePlace,
+                                                       storm::gspn::LayoutInfo(xcenter + 16.0, ycenter + 4.0));
+                            builder.addInhibitionArc(dontCarePlace, tDontCare);
+                            builder.addOutputArc(tDontCare, dontCarePlace);
+                            //Propagation
+                            uint64_t propagationPlace = builder.addPlace(1, 0, dftOr->name() + "_prop");
+                            builder.setPlaceLayoutInfo(propagationPlace,
+                                                       storm::gspn::LayoutInfo(xcenter + 12.0, ycenter + 8.0));
+                            uint64_t tPropagationFailed = builder.addImmediateTransition(dontCarePriority, 0.0,
+                                                                                         dftOr->name() + "_prop_fail");
+                            builder.setTransitionLayoutInfo(tPropagationFailed,
+                                                            storm::gspn::LayoutInfo(xcenter + 10.0, ycenter + 6.0));
+                            builder.addInhibitionArc(propagationPlace, tPropagationFailed);
+                            builder.addInputArc(failedPlace, tPropagationFailed);
+                            builder.addOutputArc(tPropagationFailed, failedPlace);
+                            builder.addOutputArc(tPropagationFailed, propagationPlace);
+                            uint64_t tPropagationDontCare = builder.addImmediateTransition(dontCarePriority, 0.0,
+                                                                                           dftOr->name() +
+                                                                                           "_prop_dontCare");
+                            builder.setTransitionLayoutInfo(tPropagationDontCare,
+                                                            storm::gspn::LayoutInfo(xcenter + 14.0, ycenter + 6.0));
+                            builder.addInhibitionArc(propagationPlace, tPropagationDontCare);
+                            builder.addInputArc(dontCarePlace, tPropagationDontCare);
+                            builder.addOutputArc(tPropagationDontCare, dontCarePlace);
+                            builder.addOutputArc(tPropagationDontCare, propagationPlace);
+                            for (auto const &child : dftOr->children()) {
+                                if (dontCareElements.count(child->id())) {
+                                    u_int64_t childDontCare = dontcareTransitions.at(child->id());
+                                    builder.addInputArc(propagationPlace, childDontCare);
+                                    builder.addOutputArc(childDontCare, propagationPlace);
+                                }
+                            }
+                        } else {
+                            builder.addInhibitionArc(failedPlace, tDontCare);
+                            builder.addOutputArc(tDontCare, failedPlace);
+                            for (auto const &child : dftOr->children()) {
+                                if (dontCareElements.count(child->id())) {
+                                    u_int64_t childDontCare = dontcareTransitions.at(child->id());
+                                    builder.addInputArc(failedPlace, childDontCare);
+                                    builder.addOutputArc(childDontCare, failedPlace);
+                                }
+                            }
+                        }
+                    } else {
+                        // If OR is TLE, simple failure propagation suffices
+                        for (auto const &child : dftOr->children()) {
+                            if (dontCareElements.count(child->id())) {
+                                u_int64_t childDontCare = dontcareTransitions.at(child->id());
+                                builder.addInputArc(failedPlace, childDontCare);
+                                builder.addOutputArc(childDontCare, failedPlace);
+                            }
+                        }
                     }
-                    assert(failedNodes.size() > child->id());
-                    builder.addInputArc(failedNodes[child->id()], tNodeFailed);
-                    builder.addOutputArc(tNodeFailed, failedNodes[child->id()]);
-                    ++i;
                 }
-			}
-			
-			template <typename ValueType>
-            void DftToGspnTransformator<ValueType>::drawVOT(std::shared_ptr<storm::storage::DFTVot<ValueType> const> dftVot, bool isRepresentative) {
+
+                bool isRepresentative = mDft.isRepresentative(dftOr->id());
+                uint64_t unavailablePlace = 0;
+                if (!smart || isRepresentative) {
+                    unavailablePlace = addUnavailablePlace(dftOr,
+                                                           storm::gspn::LayoutInfo(xcenter + 6.0, ycenter - 3.0));
+                }
+
+                for (size_t i = 0; i < dftOr->nrChildren(); ++i) {
+                    auto const &child = dftOr->children().at(i);
+                    uint64_t tFailed = 0;
+                    if (extendedPriorities)
+                        tFailed = builder.addImmediateTransition(getFailPriority(dftOr) + i, 0.0,
+                                                                 dftOr->name() + STR_FAILING + std::to_string(i));
+                    else
+                        tFailed = builder.addImmediateTransition(getFailPriority(dftOr), 0.0,
+                                                                 dftOr->name() + STR_FAILING + std::to_string(i));
+                    builder.setTransitionLayoutInfo(tFailed,
+                                                    storm::gspn::LayoutInfo(xcenter - 5.0 + i * 3.0, ycenter + 3.0));
+                    builder.addInhibitionArc(failedPlace, tFailed);
+                    builder.addOutputArc(tFailed, failedPlace);
+                    if (!smart || isRepresentative) {
+                        builder.addOutputArc(tFailed, unavailablePlace);
+                    }
+                    builder.addInputArc(getFailedPlace(child), tFailed);
+                    builder.addOutputArc(tFailed, getFailedPlace(child));
+                }
+                if (extendedPriorities)
+                    dontCarePriority++;
+            }
+
+            template<typename ValueType>
+            void DftToGspnTransformator<ValueType>::translateVOT(
+                    std::shared_ptr<storm::storage::DFTVot<ValueType> const> dftVot) {
                 // TODO: finish layouting
-                uint64_t nodeFailed = builder.addPlace(defaultCapacity, 0, dftVot->name() + STR_FAILED);
-                assert(failedNodes.size() == dftVot->id());
-                failedNodes.push_back(nodeFailed);
 
                 double xcenter = mDft.getElementLayoutInfo(dftVot->id()).x;
                 double ycenter = mDft.getElementLayoutInfo(dftVot->id()).y;
-                builder.setPlaceLayoutInfo(nodeFailed, storm::gspn::LayoutInfo(xcenter, ycenter-3.0));
 
-                uint64_t unavailableNode = 0;
-                if (isRepresentative) {
-                    unavailableNode = addUnavailableNode(dftVot, storm::gspn::LayoutInfo(xcenter+6.0, ycenter-3.0));
-                }
-                
-                uint64_t nodeCollector = builder.addPlace(dftVot->nrChildren(), 0, dftVot->name() + "_collector");
-                builder.setPlaceLayoutInfo(nodeCollector, storm::gspn::LayoutInfo(xcenter, ycenter));
+                uint64_t failedPlace = addFailedPlace(dftVot, storm::gspn::LayoutInfo(xcenter, ycenter - 3.0));
 
-                uint64_t tNodeFailed = builder.addImmediateTransition(getFailPriority(dftVot), 0.0, dftVot->name() + STR_FAILING);
-                builder.addOutputArc(tNodeFailed, nodeFailed);
-                if (isRepresentative) {
-                    builder.addOutputArc(tNodeFailed, unavailableNode);
-                }
-                builder.addInhibitionArc(nodeFailed, tNodeFailed);
-                builder.addInputArc(nodeCollector, tNodeFailed, dftVot->threshold());
-                builder.addOutputArc(tNodeFailed, nodeCollector, dftVot->threshold());
-                uint64_t i = 0;
-                for (auto const& child : dftVot->children()) {
-                    uint64_t childInhibPlace = builder.addPlace(1, 0, dftVot->name() + "_child_fail_inhib" + std::to_string(i));
-                    uint64_t tCollect = builder.addImmediateTransition(getFailPriority(dftVot), 0.0, dftVot->name() + "_child_collect" + std::to_string(i));
-                    builder.addOutputArc(tCollect, nodeCollector);
-                    builder.addOutputArc(tCollect, childInhibPlace);
-                    builder.addInhibitionArc(childInhibPlace, tCollect);
-                    builder.addInputArc(failedNodes[child->id()], tCollect);
-                    builder.addOutputArc(tCollect, failedNodes[child->id()]);
-                    ++i;
-                }
-			}
+                uint64_t tFailed = builder.addImmediateTransition(getFailPriority(dftVot), 0.0,
+                                                                  dftVot->name() + STR_FAILING);
+                builder.addOutputArc(tFailed, failedPlace);
+                builder.addInhibitionArc(failedPlace, tFailed);
 
-			template <typename ValueType>
-            void DftToGspnTransformator<ValueType>::drawPAND(std::shared_ptr<storm::storage::DFTPand<ValueType> const> dftPand, bool isRepresentative) {
-                uint64_t nodeFailed = builder.addPlace(defaultCapacity, 0, dftPand->name()  + STR_FAILED);
-                assert(failedNodes.size() == dftPand->id());
-                failedNodes.push_back(nodeFailed);
-
-                double xcenter = mDft.getElementLayoutInfo(dftPand->id()).x;
-                double ycenter = mDft.getElementLayoutInfo(dftPand->id()).y;
-                builder.setPlaceLayoutInfo(nodeFailed, storm::gspn::LayoutInfo(xcenter+3.0, ycenter-3.0));
-
-                uint64_t unavailableNode = 0;
-                if (!smart || isRepresentative) {
-                    unavailableNode = addUnavailableNode(dftPand, storm::gspn::LayoutInfo(xcenter+9.0, ycenter-3.0));
-                }
-                
-                uint64_t tNodeFailed = builder.addImmediateTransition(getFailPriority(dftPand), 0.0,  dftPand->name() + STR_FAILING);
-                builder.setTransitionLayoutInfo(tNodeFailed, storm::gspn::LayoutInfo(xcenter+3.0, ycenter+3.0));
-                builder.addInhibitionArc(nodeFailed, tNodeFailed);
-                builder.addOutputArc(tNodeFailed, nodeFailed);
-                if (!smart || isRepresentative) {
-                    builder.addOutputArc(tNodeFailed, nodeFailed);
+                if (!smart || mDft.isRepresentative(dftVot->id())) {
+                    uint64_t unavailablePlace = addUnavailablePlace(dftVot, storm::gspn::LayoutInfo(xcenter + 6.0,
+                                                                                                    ycenter - 3.0));
+                    builder.addOutputArc(tFailed, unavailablePlace);
                 }
 
-                if(dftPand->isInclusive()) {
-                    // Inclusive PAND
-                    uint64_t nodeFS = builder.addPlace(defaultCapacity, 0, dftPand->name() + STR_FAILSAVE);
-                    builder.setPlaceLayoutInfo(nodeFS, storm::gspn::LayoutInfo(xcenter-3.0, ycenter-3.0));
+                uint64_t collectorPlace = builder.addPlace(dftVot->nrChildren(), 0, dftVot->name() + "_collector");
+                builder.setPlaceLayoutInfo(collectorPlace, storm::gspn::LayoutInfo(xcenter, ycenter));
+                builder.addInputArc(collectorPlace, tFailed, dftVot->threshold());
 
-                    builder.addInhibitionArc(nodeFS, tNodeFailed);
-                    for(auto const& child : dftPand->children()) {
-                        builder.addInputArc(failedNodes[child->id()], tNodeFailed);
-                        builder.addOutputArc(tNodeFailed, failedNodes[child->id()]);
-                    }
-                    for (uint64_t j = 1; j < dftPand->nrChildren(); ++j) {
-                        uint64_t tfs = builder.addImmediateTransition(getFailPriority(dftPand), 0.0, dftPand->name() + STR_FAILSAVING + std::to_string(j));
-                        builder.setTransitionLayoutInfo(tfs, storm::gspn::LayoutInfo(xcenter-6.0+j*3.0, ycenter+3.0));
+                for (size_t i = 0; i < dftVot->nrChildren(); ++i) {
+                    auto const &child = dftVot->children().at(i);
+                    uint64_t childNextPlace = builder.addPlace(defaultCapacity, 1,
+                                                               dftVot->name() + "_child_next" + std::to_string(i));
+                    uint64_t tCollect;
+                    if (extendedPriorities)
+                        tCollect = builder.addImmediateTransition(getFailPriority(dftVot) + i, 0.0,
+                                                                  dftVot->name() + "_child_collect" +
+                                                                  std::to_string(i));
+                    else
+                        tCollect = builder.addImmediateTransition(getFailPriority(dftVot), 0.0,
+                                                                  dftVot->name() + "_child_collect" +
+                                                                  std::to_string(i));
+                    builder.addOutputArc(tCollect, collectorPlace);
+                    builder.addInputArc(childNextPlace, tCollect);
+                    builder.addInputArc(getFailedPlace(child), tCollect);
+                    builder.addOutputArc(tCollect, getFailedPlace(child));
+                }
 
-                        builder.addInputArc(failedNodes[dftPand->children().at(j)->id()], tfs);
-                        builder.addOutputArc(tfs, failedNodes[dftPand->children().at(j)->id()]);
-                        builder.addInhibitionArc(failedNodes[dftPand->children().at(j-1)->id()], tfs);
-                        builder.addOutputArc(tfs, nodeFS);
-                        builder.addInhibitionArc(nodeFS, tfs);
-                        
-                    }
-                } else {
-                    // Exclusive PAND
-                    uint64_t fi = 0;
-                    uint64_t tn = 0;
-                    for(uint64_t j = 0; j < dftPand->nrChildren(); ++j) {
-                        auto const& child = dftPand->children()[j];
-                        if (j > 0) {
-                            builder.addInhibitionArc(failedNodes.at(child->id()), tn);
-                        }
-                        if (j != dftPand->nrChildren() - 1) {
-                            tn = builder.addImmediateTransition(getFailPriority(dftPand), 0.0, dftPand->name() + STR_FAILING + "_" +std::to_string(j));
-                            builder.setTransitionLayoutInfo(tn, storm::gspn::LayoutInfo(xcenter-3.0, ycenter+3.0));
+                if (dontCareElements.count(dftVot->id())) {
+                    if (dftVot->id() != mDft.getTopLevelIndex()) {
+                        u_int64_t tDontCare = addDontcareTransition(dftVot,
+                                                                    storm::gspn::LayoutInfo(xcenter + 16.0, ycenter));
+                        if (!mergedDCFailed) {
+                            uint64_t dontCarePlace = builder.addPlace(1, 0, dftVot->name() + STR_DONTCARE);
+                            builder.setPlaceLayoutInfo(dontCarePlace,
+                                                       storm::gspn::LayoutInfo(xcenter + 16.0, ycenter + 4.0));
+                            builder.addInhibitionArc(dontCarePlace, tDontCare);
+                            builder.addOutputArc(tDontCare, dontCarePlace);
+                            //Propagation
+                            uint64_t propagationPlace = builder.addPlace(1, 0, dftVot->name() + "_prop");
+                            builder.setPlaceLayoutInfo(propagationPlace,
+                                                       storm::gspn::LayoutInfo(xcenter + 12.0, ycenter + 8.0));
+                            uint64_t tPropagationFailed = builder.addImmediateTransition(dontCarePriority, 0.0,
+                                                                                         dftVot->name() + "_prop_fail");
+                            builder.setTransitionLayoutInfo(tPropagationFailed,
+                                                            storm::gspn::LayoutInfo(xcenter + 10.0, ycenter + 6.0));
+                            builder.addInhibitionArc(propagationPlace, tPropagationFailed);
+                            builder.addInputArc(failedPlace, tPropagationFailed);
+                            builder.addOutputArc(tPropagationFailed, failedPlace);
+                            builder.addOutputArc(tPropagationFailed, propagationPlace);
+                            uint64_t tPropagationDontCare = builder.addImmediateTransition(dontCarePriority, 0.0,
+                                                                                           dftVot->name() +
+                                                                                           "_prop_dontCare");
+                            builder.setTransitionLayoutInfo(tPropagationDontCare,
+                                                            storm::gspn::LayoutInfo(xcenter + 14.0, ycenter + 6.0));
+                            builder.addInhibitionArc(propagationPlace, tPropagationDontCare);
+                            builder.addInputArc(dontCarePlace, tPropagationDontCare);
+                            builder.addOutputArc(tPropagationDontCare, dontCarePlace);
+                            builder.addOutputArc(tPropagationDontCare, propagationPlace);
+                            for (auto const &child : dftVot->children()) {
+                                if (dontCareElements.count(child->id())) {
+                                    u_int64_t childDontCare = dontcareTransitions.at(child->id());
+                                    builder.addInputArc(propagationPlace, childDontCare);
+                                    builder.addOutputArc(childDontCare, propagationPlace);
+                                }
+                            }
                         } else {
-                            tn = tNodeFailed;
+                            builder.addInhibitionArc(failedPlace, tDontCare);
+                            builder.addOutputArc(tDontCare, failedPlace);
+                            for (auto const &child : dftVot->children()) {
+                                if (dontCareElements.count(child->id())) {
+                                    u_int64_t childDontCare = dontcareTransitions.at(child->id());
+                                    builder.addInputArc(failedPlace, childDontCare);
+                                    builder.addOutputArc(childDontCare, failedPlace);
+                                }
+                            }
                         }
-                        builder.addInputArc(failedNodes.at(child->id()), tn);
-                        builder.addOutputArc(tn, failedNodes.at(child->id()));
-                        if (j > 0) {
-                            builder.addInputArc(fi, tn);
+                    } else {
+                        // If VOT is TLE, simple failure propagation suffices
+                        for (auto const &child : dftVot->children()) {
+                            if (dontCareElements.count(child->id())) {
+                                u_int64_t childDontCare = dontcareTransitions.at(child->id());
+                                builder.addInputArc(failedPlace, childDontCare);
+                                builder.addOutputArc(childDontCare, failedPlace);
+                            }
                         }
-                        if (j != dftPand->nrChildren() - 1) {
-                            fi = builder.addPlace(defaultCapacity, 0, dftPand->name() + "_F_" + std::to_string(j));
-                            builder.setPlaceLayoutInfo(fi, storm::gspn::LayoutInfo(xcenter-3.0+j*3.0, ycenter));
-                            builder.addOutputArc(tn, fi);
-                        }
-                        
                     }
                 }
+                if (extendedPriorities)
+                    dontCarePriority++;
             }
 
-            template <typename ValueType>
-            void DftToGspnTransformator<ValueType>::drawPOR(std::shared_ptr<storm::storage::DFTPor<ValueType> const> dftPor, bool isRepresentative) {
-                uint64_t nodeFailed = builder.addPlace(defaultCapacity, 0, dftPor->name() + STR_FAILED);
-                failedNodes.push_back(nodeFailed);
+            template<typename ValueType>
+            void DftToGspnTransformator<ValueType>::translatePAND(
+                    std::shared_ptr<storm::storage::DFTPand<ValueType> const> dftPand, bool inclusive) {
+                //TODO Layouting
+                double xcenter = mDft.getElementLayoutInfo(dftPand->id()).x;
+                double ycenter = mDft.getElementLayoutInfo(dftPand->id()).y;
+
+                uint64_t failedPlace = addFailedPlace(dftPand, storm::gspn::LayoutInfo(xcenter + 3.0, ycenter - 3.0));
+
+                // Set priority lower if the PAND is exclusive
+                uint64_t tFailed = builder.addImmediateTransition(
+                        /*inclusive ? getFailPriority(dftPand) : */getFailPriority(dftPand) - 1, 0.0,
+                                                                   dftPand->name() + STR_FAILING);
+                builder.setTransitionLayoutInfo(tFailed, storm::gspn::LayoutInfo(xcenter + 3.0, ycenter + 3.0));
+                builder.addInhibitionArc(failedPlace, tFailed);
+                builder.addOutputArc(tFailed, failedPlace);
+
+                if (!smart || mDft.isRepresentative(dftPand->id())) {
+                    uint64_t unavailablePlace = addUnavailablePlace(dftPand, storm::gspn::LayoutInfo(xcenter + 9.0,
+                                                                                                     ycenter - 3.0));
+                    builder.addOutputArc(tFailed, unavailablePlace);
+                }
+
+                uint64_t failSafePlace = builder.addPlace(defaultCapacity, 0, dftPand->name() + STR_FAILSAVE);
+                builder.setPlaceLayoutInfo(failSafePlace, storm::gspn::LayoutInfo(xcenter - 3.0, ycenter - 3.0));
+
+                builder.addInhibitionArc(failSafePlace, tFailed);
+
+                // Transitions for failed place
+                for (auto const &child : dftPand->children()) {
+                    builder.addInputArc(getFailedPlace(child), tFailed);
+                    builder.addOutputArc(tFailed, getFailedPlace(child));
+                }
+                // Transitions for fail-safe place
+                for (uint64_t i = 1; i < dftPand->nrChildren(); ++i) {
+                    auto const &child = dftPand->children().at(i);
+                    uint64_t tFailSafe = builder.addImmediateTransition(getFailPriority(dftPand), 0.0,
+                                                                        dftPand->name() + STR_FAILSAVING +
+                                                                        std::to_string(i));
+                    builder.setTransitionLayoutInfo(tFailSafe, storm::gspn::LayoutInfo(xcenter - 6.0 + i * 3.0,
+                                                                                       ycenter + 3.0));
+
+                    if (inclusive) {
+                        builder.addInputArc(getFailedPlace(child), tFailSafe);
+                        builder.addOutputArc(tFailSafe, getFailedPlace(child));
+                        builder.addInhibitionArc(getFailedPlace(dftPand->children().at(i - 1)), tFailSafe);
+                        builder.addOutputArc(tFailSafe, failSafePlace);
+                        builder.addInhibitionArc(failSafePlace, tFailSafe);
+                    } else {
+                        // Delay mechanism for exclusive PAND
+                        auto const &previousChild = dftPand->children().at(i - 1);
+                        uint64_t delayPlace = builder.addPlace(1, 0,
+                                                               dftPand->name() + "_delay_" + previousChild->name());
+                        builder.setPlaceLayoutInfo(delayPlace, storm::gspn::LayoutInfo(xcenter - 5.0 + (i - 1) * 3.0,
+                                                                                       ycenter + 5.0));
+                        // Priority of delayTransitions needs to be lower than for failsafeTransitions
+                        uint64_t tDelay = builder.addImmediateTransition(getFailPriority(dftPand) - 1, 0.0,
+                                                                         child->name() + "_" + dftPand->name() +
+                                                                         "_delayTransition");
+                        builder.setTransitionLayoutInfo(tDelay,
+                                                        storm::gspn::LayoutInfo(xcenter - 5.0 + (i - 1) * 3.0,
+                                                                                ycenter + 3.0));
+                        builder.addInputArc(getFailedPlace(previousChild), tDelay);
+                        builder.addOutputArc(tDelay, getFailedPlace(dftPand->children().at(i - 1)));
+                        builder.addOutputArc(tDelay, delayPlace);
+                        builder.addInhibitionArc(delayPlace, tDelay);
+
+                        builder.addInputArc(getFailedPlace(child), tFailSafe);
+                        builder.addOutputArc(tFailSafe, getFailedPlace(child));
+                        builder.addInhibitionArc(delayPlace, tFailSafe);
+                        builder.addOutputArc(tFailSafe, failSafePlace);
+                        builder.addInhibitionArc(failSafePlace, tFailSafe);
+                    }
+                }
+                // Dont Care
+                if (dontCareElements.count(dftPand->id())) {
+                    //Propagation
+                    uint64_t propagationPlace = builder.addPlace(1, 0, dftPand->name() + "_prop");
+                    builder.setPlaceLayoutInfo(propagationPlace,
+                                               storm::gspn::LayoutInfo(xcenter + 12.0, ycenter + 8.0));
+                    uint64_t tPropagationFailed = builder.addImmediateTransition(dontCarePriority, 0.0,
+                                                                                 dftPand->name() + "_prop_fail");
+                    builder.setTransitionLayoutInfo(tPropagationFailed,
+                                                    storm::gspn::LayoutInfo(xcenter + 10.0, ycenter + 6.0));
+                    uint64_t tPropagationFailsafe = builder.addImmediateTransition(dontCarePriority, 0.0,
+                                                                                   dftPand->name() + "_prop_failsafe");
+                    builder.setTransitionLayoutInfo(tPropagationFailsafe,
+                                                    storm::gspn::LayoutInfo(xcenter + 8.0, ycenter + 6.0));
+                    builder.addInhibitionArc(propagationPlace, tPropagationFailed);
+                    builder.addInputArc(failedPlace, tPropagationFailed);
+                    builder.addOutputArc(tPropagationFailed, failedPlace);
+                    builder.addOutputArc(tPropagationFailed, propagationPlace);
+
+                    builder.addInhibitionArc(propagationPlace, tPropagationFailsafe);
+                    builder.addInputArc(failSafePlace, tPropagationFailsafe);
+                    builder.addOutputArc(tPropagationFailsafe, failSafePlace);
+                    builder.addOutputArc(tPropagationFailsafe, propagationPlace);
+
+                    //Connect children to propagation place
+                    for (auto const &child : dftPand->children()) {
+                        if (dontCareElements.count(child->id())) {
+                            u_int64_t childDontCare = dontcareTransitions.at(child->id());
+                            builder.addInputArc(propagationPlace, childDontCare);
+                            builder.addOutputArc(childDontCare, propagationPlace);
+                        }
+                    }
+
+                    if (dftPand->id() != mDft.getTopLevelIndex()) {
+                        u_int64_t tDontCare = addDontcareTransition(dftPand,
+                                                                    storm::gspn::LayoutInfo(xcenter + 16.0, ycenter));
+                        if (!mergedDCFailed) {
+                            uint64_t dontCarePlace = builder.addPlace(1, 0,
+                                                                      dftPand->name() + STR_DONTCARE);
+                            builder.setPlaceLayoutInfo(dontCarePlace,
+                                                       storm::gspn::LayoutInfo(xcenter + 16.0, ycenter + 4.0));
+                            builder.addInhibitionArc(dontCarePlace, tDontCare);
+                            builder.addOutputArc(tDontCare, dontCarePlace);
+                            uint64_t tPropagationDontCare = builder.addImmediateTransition(dontCarePriority, 0.0,
+                                                                                           dftPand->name() +
+                                                                                           "_prop_dontCare");
+                            builder.setTransitionLayoutInfo(tPropagationDontCare,
+                                                            storm::gspn::LayoutInfo(xcenter + 14.0, ycenter + 6.0));
+                            builder.addInhibitionArc(propagationPlace, tPropagationDontCare);
+                            builder.addInputArc(dontCarePlace, tPropagationDontCare);
+                            builder.addOutputArc(tPropagationDontCare, dontCarePlace);
+                            builder.addOutputArc(tPropagationDontCare, propagationPlace);
+
+                        } else {
+                            builder.addInhibitionArc(failedPlace, tDontCare);
+                            builder.addOutputArc(tDontCare, failedPlace);
+                        }
+                    }
+                }
+                if (extendedPriorities)
+                    dontCarePriority++;
+            }
+
+            template<typename ValueType>
+            void DftToGspnTransformator<ValueType>::translatePOR(
+                    std::shared_ptr<storm::storage::DFTPor<ValueType> const> dftPor, bool inclusive) {
 
                 double xcenter = mDft.getElementLayoutInfo(dftPor->id()).x;
                 double ycenter = mDft.getElementLayoutInfo(dftPor->id()).y;
-                builder.setPlaceLayoutInfo(nodeFailed, storm::gspn::LayoutInfo(xcenter+3.0, ycenter-3.0));
 
-                uint64_t unavailableNode = 0;
-                if (!smart || isRepresentative) {
-                    unavailableNode = addUnavailableNode(dftPor, storm::gspn::LayoutInfo(xcenter+9.0, ycenter-3.0));
+                uint64_t delayPlace = 0;
+
+                uint64_t failedPlace = addFailedPlace(dftPor, storm::gspn::LayoutInfo(xcenter + 3.0, ycenter - 3.0));
+
+                // Set priority lower if the POR is exclusive
+                uint64_t tFailed = builder.addImmediateTransition(
+                        /*inclusive ? getFailPriority(dftPor) : */getFailPriority(dftPor) - 1, 0.0,
+                                                                  dftPor->name() + STR_FAILING);
+                builder.setTransitionLayoutInfo(tFailed, storm::gspn::LayoutInfo(xcenter + 3.0, ycenter + 3.0));
+                builder.addOutputArc(tFailed, failedPlace);
+                builder.addInhibitionArc(failedPlace, tFailed);
+
+                // Arcs from first child
+                builder.addInputArc(getFailedPlace(dftPor->children().front()), tFailed);
+                builder.addOutputArc(tFailed, getFailedPlace(dftPor->children().front()));
+
+                if (!smart || mDft.isRepresentative(dftPor->id())) {
+                    uint64_t unavailablePlace = addUnavailablePlace(dftPor, storm::gspn::LayoutInfo(xcenter + 9.0,
+                                                                                                    ycenter - 3.0));
+                    builder.addOutputArc(tFailed, unavailablePlace);
                 }
 
-                uint64_t tfail = builder.addImmediateTransition(getFailPriority(dftPor), 0.0, dftPor->name() + STR_FAILING);
-                builder.setTransitionLayoutInfo(tfail, storm::gspn::LayoutInfo(xcenter+3.0, ycenter+3.0));
-                builder.addOutputArc(tfail, nodeFailed);
-                builder.addInhibitionArc(nodeFailed, tfail);
+                uint64_t failSafePlace = builder.addPlace(defaultCapacity, 0, dftPor->name() + STR_FAILSAVE);
+                builder.setPlaceLayoutInfo(failSafePlace, storm::gspn::LayoutInfo(xcenter - 3.0, ycenter - 3.0));
 
-                builder.addInputArc(failedNodes.at(dftPor->children().front()->id()), tfail);
-                builder.addOutputArc(tfail, failedNodes.at(dftPor->children().front()->id()));
+                builder.addInhibitionArc(failSafePlace, tFailed);
 
-                if(!smart || isRepresentative) {
-                    builder.addOutputArc(tfail, unavailableNode);
+                if (!inclusive) {
+                    // Setup delay mechanism if necessary
+                    delayPlace = builder.addPlace(1, 0, dftPor->name() + "_delay");
+                    builder.setPlaceLayoutInfo(delayPlace, storm::gspn::LayoutInfo(xcenter - 5.0,
+                                                                                   ycenter + 5.0));
+
+                    // priority of delayTransition has to be lower than other priorities
+                    uint64_t tDelay = builder.addImmediateTransition(getFailPriority(dftPor) - 1, 0.0, dftPor->name() +
+                                                                                                       "_delayTransition");
+                    builder.setTransitionLayoutInfo(tDelay,
+                                                    storm::gspn::LayoutInfo(xcenter - 5.0,
+                                                                            ycenter + 3.0));
+
+                    builder.addInputArc(getFailedPlace(dftPor->children().front()), tDelay);
+                    builder.addOutputArc(tDelay, getFailedPlace(dftPor->children().front()));
+                    builder.addOutputArc(tDelay, delayPlace);
+                    builder.addInhibitionArc(delayPlace, tDelay);
                 }
 
-                if(dftPor->isInclusive()) {
-                    // Inclusive POR
-                    uint64_t nodeFS = builder.addPlace(defaultCapacity, 0, dftPor->name() + STR_FAILSAVE);
-                    builder.setPlaceLayoutInfo(nodeFS, storm::gspn::LayoutInfo(xcenter-3.0, ycenter-3.0));
+                // For all children except the first one
+                for (size_t i = 1; i < dftPor->nrChildren(); ++i) {
+                    auto const &child = dftPor->children().at(i);
+                    uint64_t tFailSafe = builder.addImmediateTransition(getFailPriority(dftPor), 0.0,
+                                                                        dftPor->name() + STR_FAILSAVING +
+                                                                        std::to_string(i));
+                    builder.setTransitionLayoutInfo(tFailSafe, storm::gspn::LayoutInfo(xcenter - 3.0 + i * 3.0,
+                                                                                       ycenter + 3.0));
 
-                    builder.addInhibitionArc(nodeFS, tfail);
-                    uint64_t j = 0;
-                    for (auto const& child : dftPor->children()) {
-                        if(j > 0) {
-                            uint64_t tfailsf = builder.addImmediateTransition(getFailPriority(dftPor), 0.0, dftPor->name() + STR_FAILSAVING + std::to_string(j));
-                            builder.setTransitionLayoutInfo(tfailsf, storm::gspn::LayoutInfo(xcenter-3.0+j*3.0, ycenter+3.0));
-                            builder.addInputArc(failedNodes.at(child->id()), tfailsf);
-                            builder.addOutputArc(tfailsf, failedNodes.at(child->id()));
-                            builder.addOutputArc(tfailsf, nodeFS);
-                            builder.addInhibitionArc(nodeFS, tfailsf);
-                            builder.addInhibitionArc(failedNodes.at(dftPor->children().front()->id()), tfailsf);
-                        }
-
-                        ++j;
+                    builder.addInputArc(getFailedPlace(child), tFailSafe);
+                    builder.addOutputArc(tFailSafe, getFailedPlace(child));
+                    builder.addOutputArc(tFailSafe, failSafePlace);
+                    builder.addInhibitionArc(failSafePlace, tFailSafe);
+                    if (inclusive) {
+                        builder.addInhibitionArc(getFailedPlace(dftPor->children().front()), tFailSafe);
+                    } else {
+                        builder.addInhibitionArc(delayPlace, tFailSafe);
                     }
-                } else {
-                    // Exclusive POR
-                    uint64_t j = 0;
-                    for (auto const& child : dftPor->children()) {
-                        if(j > 0) {
-                            builder.addInhibitionArc(failedNodes.at(child->id()), tfail);
+                }
+
+                // Dont Care
+                if (dontCareElements.count(dftPor->id())) {
+                    //Propagation
+                    uint64_t propagationPlace = builder.addPlace(1, 0, dftPor->name() + "_prop");
+                    builder.setPlaceLayoutInfo(propagationPlace,
+                                               storm::gspn::LayoutInfo(xcenter + 12.0, ycenter + 8.0));
+                    uint64_t tPropagationFailed = builder.addImmediateTransition(dontCarePriority, 0.0,
+                                                                                 dftPor->name() + "_prop_fail");
+                    builder.setTransitionLayoutInfo(tPropagationFailed,
+                                                    storm::gspn::LayoutInfo(xcenter + 10.0, ycenter + 6.0));
+                    uint64_t tPropagationFailsafe = builder.addImmediateTransition(dontCarePriority, 0.0,
+                                                                                   dftPor->name() + "_prop_failsafe");
+                    builder.setTransitionLayoutInfo(tPropagationFailsafe,
+                                                    storm::gspn::LayoutInfo(xcenter + 8.0, ycenter + 6.0));
+                    builder.addInhibitionArc(propagationPlace, tPropagationFailed);
+                    builder.addInputArc(failedPlace, tPropagationFailed);
+                    builder.addOutputArc(tPropagationFailed, failedPlace);
+                    builder.addOutputArc(tPropagationFailed, propagationPlace);
+
+                    builder.addInhibitionArc(propagationPlace, tPropagationFailsafe);
+                    builder.addInputArc(failSafePlace, tPropagationFailsafe);
+                    builder.addOutputArc(tPropagationFailsafe, failSafePlace);
+                    builder.addOutputArc(tPropagationFailsafe, propagationPlace);
+
+                    //Connect children to propagation place
+                    for (auto const &child : dftPor->children()) {
+                        if (dontCareElements.count(child->id())) {
+                            u_int64_t childDontCare = dontcareTransitions.at(child->id());
+                            builder.addInputArc(propagationPlace, childDontCare);
+                            builder.addOutputArc(childDontCare, propagationPlace);
                         }
-                        ++j;
                     }
 
+                    if (dftPor->id() != mDft.getTopLevelIndex()) {
+                        u_int64_t tDontCare = addDontcareTransition(dftPor,
+                                                                    storm::gspn::LayoutInfo(xcenter + 16.0, ycenter));
+                        if (!mergedDCFailed) {
+                            uint64_t dontCarePlace = builder.addPlace(1, 0,
+                                                                      dftPor->name() + STR_DONTCARE);
+                            builder.setPlaceLayoutInfo(dontCarePlace,
+                                                       storm::gspn::LayoutInfo(xcenter + 16.0, ycenter + 4.0));
+                            builder.addInhibitionArc(dontCarePlace, tDontCare);
+                            builder.addOutputArc(tDontCare, dontCarePlace);
+                            uint64_t tPropagationDontCare = builder.addImmediateTransition(dontCarePriority, 0.0,
+                                                                                           dftPor->name() +
+                                                                                           "_prop_dontCare");
+                            builder.setTransitionLayoutInfo(tPropagationDontCare,
+                                                            storm::gspn::LayoutInfo(xcenter + 14.0, ycenter + 6.0));
+                            builder.addInhibitionArc(propagationPlace, tPropagationDontCare);
+                            builder.addInputArc(dontCarePlace, tPropagationDontCare);
+                            builder.addOutputArc(tPropagationDontCare, dontCarePlace);
+                            builder.addOutputArc(tPropagationDontCare, propagationPlace);
+
+                        } else {
+                            builder.addInhibitionArc(failedPlace, tDontCare);
+                            builder.addOutputArc(tDontCare, failedPlace);
+                        }
+                    }
                 }
-                
+                if (extendedPriorities)
+                    dontCarePriority++;
             }
 
-			template <typename ValueType>
-            void DftToGspnTransformator<ValueType>::drawSPARE(std::shared_ptr<storm::storage::DFTSpare<ValueType> const> dftSpare, bool isRepresentative) {
-                
-                uint64_t nodeFailed = builder.addPlace(defaultCapacity, 0, dftSpare->name() + STR_FAILED);
-                failedNodes.push_back(nodeFailed);
-
+            template<typename ValueType>
+            void DftToGspnTransformator<ValueType>::translateSPARE(
+                    std::shared_ptr<storm::storage::DFTSpare<ValueType> const> dftSpare) {
                 double xcenter = mDft.getElementLayoutInfo(dftSpare->id()).x;
                 double ycenter = mDft.getElementLayoutInfo(dftSpare->id()).y;
-                builder.setPlaceLayoutInfo(nodeFailed, storm::gspn::LayoutInfo(xcenter+10.0, ycenter-8.0));
 
-                uint64_t unavailableNode = 0;
-                if (isRepresentative) {
-                    unavailableNode = addUnavailableNode(dftSpare, storm::gspn::LayoutInfo(xcenter+16.0, ycenter-8.0));
+                u_int64_t prio = getFailPriority(dftSpare);
+
+                uint64_t failedPlace = addFailedPlace(dftSpare, storm::gspn::LayoutInfo(xcenter + 10.0, ycenter - 8.0));
+
+                bool isRepresentative = mDft.isRepresentative(dftSpare->id());
+                uint64_t unavailablePlace = 0;
+                if (!smart || isRepresentative) {
+                    unavailablePlace = addUnavailablePlace(dftSpare,
+                                                           storm::gspn::LayoutInfo(xcenter + 16.0, ycenter - 8.0));
                 }
-                uint64_t spareActive = builder.addPlace(defaultCapacity, isBEActive(dftSpare) ? 1 : 0, dftSpare->name() + STR_ACTIVATED);
-                builder.setPlaceLayoutInfo(spareActive, storm::gspn::LayoutInfo(xcenter-20.0, ycenter-8.0));
-                activeNodes.emplace(dftSpare->id(), spareActive);
 
-                
-                std::vector<uint64_t> cucNodes;
-                std::vector<uint64_t> considerNodes;
-                std::vector<uint64_t> nextclTransitions;
-                std::vector<uint64_t> nextconsiderTransitions;
-                uint64_t j = 0;
-                for(auto const& child : dftSpare->children()) {
-                    if (j > 0) {
-                        size_t nodeConsider = builder.addPlace(defaultCapacity, 0, dftSpare->name()+ "_consider_" + child->name());
-                        considerNodes.push_back(nodeConsider);
-                        builder.setPlaceLayoutInfo(nodeConsider, storm::gspn::LayoutInfo(xcenter-15.0+j*14.0, ycenter-8.0));
+                uint64_t activePlace = builder.addPlace(defaultCapacity, isActiveInitially(dftSpare) ? 1 : 0,
+                                                        dftSpare->name() + STR_ACTIVATED);
+                builder.setPlaceLayoutInfo(activePlace, storm::gspn::LayoutInfo(xcenter - 20.0, ycenter - 12.0));
+                activePlaces.emplace(dftSpare->id(), activePlace);
 
-                        builder.addOutputArc(nextclTransitions.back(), considerNodes.back(), 1);
-                        if (j > 1) {
-                            builder.addOutputArc(nextconsiderTransitions.back(), considerNodes.back());
-                        }
-                        
-                        uint64_t tnextconsider = builder.addImmediateTransition(getFailPriority(dftSpare), 0.0, dftSpare->name() + "_cannot_claim_" + child->name());
-                        builder.setTransitionLayoutInfo(tnextconsider, storm::gspn::LayoutInfo(xcenter-7.0+j*14.0, ycenter-8.0));
-                        builder.addInputArc(considerNodes.back(), tnextconsider);
-                        builder.addInputArc(unavailableNodes.at(child->id()), tnextconsider);
-                        nextconsiderTransitions.push_back(tnextconsider);
-                        
+                std::vector<uint64_t> tNextClaims;
+                std::vector<uint64_t> tNextConsiders;
+                for (size_t i = 0; i < dftSpare->nrChildren(); ++i) {
+                    auto const &child = dftSpare->children().at(i);
+                    // Consider next child
+                    size_t considerPlace = builder.addPlace(defaultCapacity, i == 0 ? 1 : 0,
+                                                            dftSpare->name() + "_consider_" + child->name());
+                    builder.setPlaceLayoutInfo(considerPlace,
+                                               storm::gspn::LayoutInfo(xcenter - 15.0 + i * 14.0, ycenter - 8.0));
+
+                    if (i > 0) {
+                        // Set output transition from previous next_claim
+                        builder.addOutputArc(tNextClaims.back(), considerPlace);
+                        // Set output transition from previous cannot_claim
+                        builder.addOutputArc(tNextConsiders.back(), considerPlace);
                     }
-                    size_t nodeCUC = builder.addPlace(defaultCapacity, j == 0 ? 1 : 0, dftSpare->name() + "_claimed_" + child->name());
-                    cucNodes.push_back(nodeCUC);
-                    builder.setPlaceLayoutInfo(nodeCUC, storm::gspn::LayoutInfo(xcenter-9.0+j*14.0, ycenter+5.0));
-                    if (j > 0) {
-                        uint64_t tclaim = builder.addImmediateTransition(getFailPriority(dftSpare), 0.0, dftSpare->name() + "_claim_" + child->name());
-                        builder.setTransitionLayoutInfo(tclaim, storm::gspn::LayoutInfo(xcenter-9.0+j*14.0, ycenter));
-                        builder.addInhibitionArc(unavailableNodes.at(child->id()), tclaim);
-                        builder.addInputArc(considerNodes.back(), tclaim);
-                        builder.addOutputArc(tclaim, cucNodes.back());
-                    }
-                    uint64_t tnextcl = builder.addImmediateTransition(getFailPriority(dftSpare), 0.0, dftSpare->name() + "_next_claim_" + std::to_string(j));
-                    builder.setTransitionLayoutInfo(tnextcl, storm::gspn::LayoutInfo(xcenter-3.0+j*14.0, ycenter+5.0));
-                    builder.addInputArc(cucNodes.back(), tnextcl);
-                    builder.addInputArc(failedNodes.at(child->id()), tnextcl);
-                    builder.addOutputArc(tnextcl, failedNodes.at(child->id()));
-                    nextclTransitions.push_back(tnextcl);
-                    ++j;
+
+                    // Cannot claim child
+                    uint64_t tConsiderNext = builder.addImmediateTransition(prio, 0.0,
+                                                                            dftSpare->name() + "_cannot_claim_" +
+                                                                            child->name());
+                    prio++;
+                    builder.setTransitionLayoutInfo(tConsiderNext,
+                                                    storm::gspn::LayoutInfo(xcenter - 7.0 + i * 14.0, ycenter - 8.0));
+                    builder.addInputArc(considerPlace, tConsiderNext);
+                    builder.addInputArc(unavailablePlaces.at(child->id()), tConsiderNext);
+                    builder.addOutputArc(tConsiderNext, unavailablePlaces.at(child->id()));
+                    tNextConsiders.push_back(tConsiderNext);
+
+                    // Claimed child
+                    size_t claimedPlace = builder.addPlace(defaultCapacity, 0,
+                                                           dftSpare->name() + "_claimed_" + child->name());
+                    builder.setPlaceLayoutInfo(claimedPlace,
+                                               storm::gspn::LayoutInfo(xcenter - 15.0 + i * 14.0, ycenter + 5.0));
+                    uint64_t tClaim = builder.addImmediateTransition(prio, 0.0,
+                                                                     dftSpare->name() + "_claim_" + child->name());
+                    prio++;
+                    builder.setTransitionLayoutInfo(tClaim,
+                                                    storm::gspn::LayoutInfo(xcenter - 15.0 + i * 14.0, ycenter));
+                    builder.addInhibitionArc(unavailablePlaces.at(child->id()), tClaim);
+                    builder.addInputArc(considerPlace, tClaim);
+                    builder.addOutputArc(tClaim, claimedPlace);
+                    builder.addOutputArc(tClaim, unavailablePlaces.at(child->id()));
+
+                    // Claim next
+                    uint64_t tClaimNext = builder.addImmediateTransition(prio, 0.0,
+                                                                         dftSpare->name() + "_next_claim_" +
+                                                                         std::to_string(i));
+                    prio++;
+                    builder.setTransitionLayoutInfo(tClaimNext,
+                                                    storm::gspn::LayoutInfo(xcenter - 7.0 + i * 14.0, ycenter + 5.0));
+                    builder.addInputArc(claimedPlace, tClaimNext);
+                    builder.addInputArc(getFailedPlace(child), tClaimNext);
+                    builder.addOutputArc(tClaimNext, getFailedPlace(child));
+                    tNextClaims.push_back(tClaimNext);
+
+                    // Activate all elements in spare module
+                    uint64_t l = 0;
                     for (uint64_t k : mDft.module(child->id())) {
-                        
-                        uint64_t tactive = builder.addImmediateTransition(defaultPriority+1, 0.0, dftSpare->name() + "_activate_" + std::to_string(j) + "_" +  std::to_string(k));
-                        builder.addInputArc(cucNodes.back(), tactive);
-                        builder.addOutputArc(tactive, cucNodes.back());
-                        builder.addInputArc(spareActive, tactive);
-                        builder.addOutputArc(tactive, activeNodes.at(k));
-                        builder.addInhibitionArc(activeNodes.at(k), tactive);
+                        uint64_t tActivate = builder.addImmediateTransition(prio, 0.0,
+                                                                            dftSpare->name() + "_activate_" +
+                                                                            std::to_string(i) + "_" +
+                                                                            std::to_string(k));
+                        prio++;
+                        builder.setTransitionLayoutInfo(tActivate, storm::gspn::LayoutInfo(xcenter - 18.0 + (i + l) * 3,
+                                                                                           ycenter - 12.0));
+                        builder.addInhibitionArc(activePlaces.at(k), tActivate);
+                        builder.addInputArc(claimedPlace, tActivate);
+                        builder.addInputArc(activePlace, tActivate);
+                        builder.addOutputArc(tActivate, claimedPlace);
+                        builder.addOutputArc(tActivate, activePlace);
+                        builder.addOutputArc(tActivate, activePlaces.at(k));
+                        ++l;
                     }
-                    
-                    
-                }
-                builder.addOutputArc(nextconsiderTransitions.back(), nodeFailed);
-                builder.addOutputArc(nextclTransitions.back(), nodeFailed);
-
-                if (isRepresentative) {
-                    builder.addOutputArc(nextconsiderTransitions.back(), unavailableNode);
-                    builder.addOutputArc(nextclTransitions.back(), unavailableNode);
-                }
-                
-                
-
-			}
-
-			template <typename ValueType>
-            void DftToGspnTransformator<ValueType>::drawCONSTF(std::shared_ptr<storm::storage::DFTElement<ValueType> const> dftConstF, bool isRepresentative) {
-			    failedNodes.push_back(builder.addPlace(defaultCapacity, 1, dftConstF->name() + STR_FAILED));
-                uint64_t unavailableNode = 0;
-                if (isRepresentative) {
-                    // TODO set position
-                    unavailableNode = addUnavailableNode(dftConstF, storm::gspn::LayoutInfo(0, 0), false);
                 }
 
-			}
-//			
-			template <typename ValueType>
-            void DftToGspnTransformator<ValueType>::drawCONSTS(std::shared_ptr<storm::storage::DFTElement<ValueType> const> dftConstS, bool isRepresentative) {
-//				storm::gspn::Place placeCONSTSFailed;
-//				placeCONSTSFailed.setName(dftConstS->name() + STR_FAILED);
-//				placeCONSTSFailed.setNumberOfInitialTokens(0);
-//				placeCONSTSFailed.setCapacity(0); // It cannot contain a token, because it cannot fail.
-//				mGspn.addPlace(placeCONSTSFailed);
-			}
-//			
-			template <typename ValueType>
-            void DftToGspnTransformator<ValueType>::drawPDEP(std::shared_ptr<storm::storage::DFTDependency<ValueType> const> dftDependency) {
-                double xcenter = mDft.getElementLayoutInfo(dftDependency->id()).x;;
-                double ycenter = mDft.getElementLayoutInfo(dftDependency->id()).y;;
-                
-                uint64_t coinPlace = builder.addPlace(defaultCapacity, 1, dftDependency->name() + "_coin");
-                builder.setPlaceLayoutInfo(coinPlace, storm::gspn::LayoutInfo(xcenter-5.0, ycenter+2.0));
-                uint64_t t1 = builder.addImmediateTransition(defaultPriority, 0.0, dftDependency->name() + "_start_flip");
-                
-                builder.addInputArc(coinPlace, t1);
-                builder.addInputArc(failedNodes.at(dftDependency->triggerEvent()->id()), t1);
-                builder.addOutputArc(t1, failedNodes.at(dftDependency->triggerEvent()->id()));
-                uint64_t forwardPlace = builder.addPlace(defaultCapacity, 0, dftDependency->name() + "_forward");
-                builder.setPlaceLayoutInfo(forwardPlace, storm::gspn::LayoutInfo(xcenter+1.0, ycenter+2.0));
-                
-                if (!smart || dftDependency->probability() < 1.0) {
+                // Set arcs to failed
+                builder.addOutputArc(tNextConsiders.back(), failedPlace);
+                builder.addOutputArc(tNextClaims.back(), failedPlace);
+                builder.addInhibitionArc(failedPlace, tNextConsiders.back());
+                builder.addInhibitionArc(failedPlace, tNextClaims.back());
+
+                // Don't Care Mechanism
+                if (dontCareElements.count(dftSpare->id())) {
+                    if (dftSpare->id() != mDft.getTopLevelIndex()) {
+                        u_int64_t tDontCare = addDontcareTransition(dftSpare,
+                                                                    storm::gspn::LayoutInfo(xcenter + 16.0, ycenter));
+                        if (!mergedDCFailed) {
+                            uint64_t dontCarePlace = builder.addPlace(1, 0,
+                                                                      dftSpare->name() + STR_DONTCARE);
+                            builder.setPlaceLayoutInfo(dontCarePlace,
+                                                       storm::gspn::LayoutInfo(xcenter + 16.0, ycenter + 4.0));
+                            builder.addInhibitionArc(dontCarePlace, tDontCare);
+                            builder.addOutputArc(tDontCare, dontCarePlace);
+                            //Propagation
+                            uint64_t propagationPlace = builder.addPlace(1, 0,
+                                                                         dftSpare->name() + "_prop");
+                            builder.setPlaceLayoutInfo(propagationPlace,
+                                                       storm::gspn::LayoutInfo(xcenter + 12.0, ycenter + 8.0));
+                            uint64_t tPropagationFailed = builder.addImmediateTransition(dontCarePriority, 0.0,
+                                                                                         dftSpare->name() +
+                                                                                         "_prop_fail");
+                            builder.setTransitionLayoutInfo(tPropagationFailed,
+                                                            storm::gspn::LayoutInfo(xcenter + 10.0, ycenter + 6.0));
+                            builder.addInhibitionArc(propagationPlace, tPropagationFailed);
+                            builder.addInputArc(failedPlace, tPropagationFailed);
+                            builder.addOutputArc(tPropagationFailed, failedPlace);
+                            builder.addOutputArc(tPropagationFailed, propagationPlace);
+                            uint64_t tPropagationDontCare = builder.addImmediateTransition(dontCarePriority, 0.0,
+                                                                                           dftSpare->name() +
+                                                                                           "_prop_dontCare");
+                            builder.setTransitionLayoutInfo(tPropagationDontCare,
+                                                            storm::gspn::LayoutInfo(xcenter + 14.0, ycenter + 6.0));
+                            builder.addInhibitionArc(propagationPlace, tPropagationDontCare);
+                            builder.addInputArc(dontCarePlace, tPropagationDontCare);
+                            builder.addOutputArc(tPropagationDontCare, dontCarePlace);
+                            builder.addOutputArc(tPropagationDontCare, propagationPlace);
+                            for (auto const &child : dftSpare->children()) {
+                                if (dontCareElements.count(child->id())) {
+                                    u_int64_t childDontCare = dontcareTransitions.at(child->id());
+                                    builder.addInputArc(propagationPlace, childDontCare);
+                                    builder.addOutputArc(childDontCare, propagationPlace);
+                                }
+                            }
+                        } else {
+                            builder.addInhibitionArc(failedPlace, tDontCare);
+                            builder.addOutputArc(tDontCare, failedPlace);
+                            for (auto const &child : dftSpare->children()) {
+                                if (dontCareElements.count(child->id())) {
+                                    u_int64_t childDontCare = dontcareTransitions.at(child->id());
+                                    builder.addInputArc(failedPlace, childDontCare);
+                                    builder.addOutputArc(childDontCare, failedPlace);
+                                }
+                            }
+                        }
+                    } else {
+                        // If SPARE is TLE, simple failure propagation suffices
+                        for (auto const &child : dftSpare->children()) {
+                            if (dontCareElements.count(child->id())) {
+                                u_int64_t childDontCare = dontcareTransitions.at(child->id());
+                                builder.addInputArc(failedPlace, childDontCare);
+                                builder.addOutputArc(childDontCare, failedPlace);
+                            }
+                        }
+                    }
+                }
+
+                if (!smart || isRepresentative) {
+                    builder.addOutputArc(tNextConsiders.back(), unavailablePlace);
+                    builder.addOutputArc(tNextClaims.back(), unavailablePlace);
+                }
+                if (extendedPriorities)
+                    dontCarePriority++;
+            }
+
+            template<typename ValueType>
+            void DftToGspnTransformator<ValueType>::translatePDEP(
+                    std::shared_ptr<storm::storage::DFTDependency<ValueType> const> dftDependency) {
+                double xcenter = mDft.getElementLayoutInfo(dftDependency->id()).x;
+                double ycenter = mDft.getElementLayoutInfo(dftDependency->id()).y;
+
+                uint64_t failedPlace = 0;
+                if (!smart) {
+                    failedPlace = addFailedPlace(dftDependency, storm::gspn::LayoutInfo(xcenter + 10.0, ycenter - 8.0));
+                    addUnavailablePlace(dftDependency, storm::gspn::LayoutInfo(xcenter + 16.0, ycenter - 8.0));
+                }
+
+                uint64_t forwardPlace = 0;
+                if (dftDependency->probability() < 1.0) {
+                    // PDEP
+                    forwardPlace = builder.addPlace(defaultCapacity, 0, dftDependency->name() + "_forward");
+                    builder.setPlaceLayoutInfo(forwardPlace, storm::gspn::LayoutInfo(xcenter + 1.0, ycenter + 2.0));
+
+                    uint64_t coinPlace = builder.addPlace(defaultCapacity, 1, dftDependency->name() + "_coin");
+                    builder.setPlaceLayoutInfo(coinPlace, storm::gspn::LayoutInfo(xcenter - 5.0, ycenter + 2.0));
+
+                    uint64_t tStartFlip = builder.addImmediateTransition(getFailPriority(dftDependency), 0.0,
+                                                                         dftDependency->name() + "_start_flip");
+                    builder.addInputArc(coinPlace, tStartFlip);
+                    builder.addInputArc(getFailedPlace(dftDependency->triggerEvent()), tStartFlip);
+                    builder.addOutputArc(tStartFlip, getFailedPlace(dftDependency->triggerEvent()));
+
                     uint64_t flipPlace = builder.addPlace(defaultCapacity, 0, dftDependency->name() + "_flip");
-                    builder.addOutputArc(t1, flipPlace);
-                    
-                    builder.setPlaceLayoutInfo(flipPlace, storm::gspn::LayoutInfo(xcenter-2.0, ycenter+2.0));
-                    uint64_t t2 = builder.addImmediateTransition(defaultPriority + 1, dftDependency->probability(), "_win_flip");
-                    builder.addInputArc(flipPlace, t2);
-                    builder.addOutputArc(t2, forwardPlace);
-                    if (dftDependency->probability() < 1.0) {
-                        uint64_t t3 = builder.addImmediateTransition(defaultPriority + 1, 1 - dftDependency->probability(), "_loose_flip");
-                        builder.addInputArc(flipPlace, t3);
-                    }
+                    builder.setPlaceLayoutInfo(flipPlace, storm::gspn::LayoutInfo(xcenter - 2.0, ycenter + 2.0));
+                    builder.addOutputArc(tStartFlip, flipPlace);
+
+                    uint64_t tWinFlip = builder.addImmediateTransition(getFailPriority(dftDependency) + 1,
+                                                                       dftDependency->probability(),
+                                                                       dftDependency->name() + "_win_flip");
+                    builder.addInputArc(flipPlace, tWinFlip);
+                    builder.addOutputArc(tWinFlip, forwardPlace);
+
+                    uint64_t tLooseFlip = builder.addImmediateTransition(getFailPriority(dftDependency) + 1,
+                                                                         storm::utility::one<ValueType>() -
+                                                                         dftDependency->probability(),
+                                                                         dftDependency->name() + "_lose_flip");
+                    builder.addInputArc(flipPlace, tLooseFlip);
                 } else {
-                    builder.addOutputArc(t1, forwardPlace);
+                    // FDEP
+                    forwardPlace = getFailedPlace(dftDependency->triggerEvent());
                 }
-                for(auto const& depEv : dftDependency->dependentEvents()) {
-                    uint64_t tx = builder.addImmediateTransition(defaultPriority, 0.0, dftDependency->name() + "_propagate_" + depEv->name());
-                    builder.addInputArc(forwardPlace, tx);
-                    builder.addOutputArc(tx, forwardPlace);
-                    builder.addOutputArc(tx, failedNodes.at(depEv->id()));
-                    builder.addInhibitionArc(failedNodes.at(depEv->id()), tx);
-                    if (!smart || depEv->nrRestrictions() > 0) {
-                        builder.addInhibitionArc(disabledNodes.at(depEv->id()), tx);
+
+                // if the extended priorities option is set, set the priority for the forwarding transitions uniquely
+                uint64_t propagationPriority = getFailPriority(dftDependency);
+                for (auto const &child : dftDependency->dependentEvents()) {
+                    uint64_t tForwardFailure = builder.addImmediateTransition(propagationPriority, 0.0,
+                                                                              dftDependency->name() + "_propagate_" +
+                                                                              child->name());
+
+                    builder.addInputArc(forwardPlace, tForwardFailure);
+                    builder.addOutputArc(tForwardFailure, forwardPlace);
+                    builder.addOutputArc(tForwardFailure, getFailedPlace(child));
+                    builder.addInhibitionArc(getFailedPlace(child), tForwardFailure);
+                    if (!smart || child->nrRestrictions() > 0) {
+                        builder.addInhibitionArc(disabledPlaces.at(child->id()), tForwardFailure);
                     }
-                    if (!smart || mDft.isRepresentative(depEv->id())) {
-                        builder.addOutputArc(tx, unavailableNodes.at(depEv->id()));
+                    if (!smart || mDft.isRepresentative(child->id())) {
+                        builder.addOutputArc(tForwardFailure, unavailablePlaces.at(child->id()));
                     }
-                   
+                    propagationPriority--;
                 }
-                
-                
-                
-                
-                
-			}
-            
-            template <typename ValueType>
-            void DftToGspnTransformator<ValueType>::drawSeq(std::shared_ptr<storm::storage::DFTSeq<ValueType> const> dftSeq) {
-                STORM_LOG_THROW(dftSeq->allChildrenBEs(), storm::exceptions::NotImplementedException, "Sequence enforcers with gates as children are currently not supported");
-                uint64_t j = 0;
+
+                // Don't Care
+                if (dontCareElements.count(dftDependency->id())) {
+                    u_int64_t tDontCare = addDontcareTransition(dftDependency,
+                                                                storm::gspn::LayoutInfo(xcenter + 3.0, ycenter));
+                    if (!mergedDCFailed) {
+                        u_int64_t dontCarePlace = builder.addPlace(1, 0,
+                                                                   dftDependency->name() + STR_DONTCARE);
+                        builder.setPlaceLayoutInfo(dontCarePlace, storm::gspn::LayoutInfo(xcenter + 4.0, ycenter));
+                        builder.addInhibitionArc(dontCarePlace, tDontCare);
+                        builder.addOutputArc(tDontCare, dontCarePlace);
+                        // Add the arcs for the dependent events
+                        for (auto const &dependentEvent : dftDependency->dependentEvents()) {
+                            if (dontCareElements.count(dependentEvent->id())) {
+                                u_int64_t dependentEventPropagation = dependencyPropagationPlaces.at(
+                                        dependentEvent->id());
+                                builder.addInputArc(dependentEventPropagation, tDontCare);
+                                builder.addOutputArc(tDontCare, dependentEventPropagation);
+                            }
+                        }
+                        // Add the arcs for the trigger
+                        uint64_t triggerDontCare = dontcareTransitions.at(dftDependency->triggerEvent()->id());
+                        builder.addInputArc(dontCarePlace, triggerDontCare);
+                        builder.addOutputArc(triggerDontCare, dontCarePlace);
+                    } else {
+                        if (failedPlace == 0) {
+                            failedPlace = addFailedPlace(dftDependency,
+                                                         storm::gspn::LayoutInfo(xcenter + 4.0, ycenter));
+                        }
+                        builder.addInhibitionArc(failedPlace, tDontCare);
+                        builder.addOutputArc(tDontCare, failedPlace);
+
+                        // Add the arcs for the dependent events
+                        for (auto const &dependentEvent : dftDependency->dependentEvents()) {
+                            if (dontCareElements.count(dependentEvent->id())) {
+                                u_int64_t dependentEventFailed = failedPlaces.at(dependentEvent->id());
+                                builder.addInputArc(dependentEventFailed, tDontCare);
+                                builder.addOutputArc(tDontCare, dependentEventFailed);
+                            }
+                        }
+                        // Add the arcs for the trigger
+                        uint64_t triggerDontCare = dontcareTransitions.at(dftDependency->triggerEvent()->id());
+                        builder.addInputArc(failedPlace, triggerDontCare);
+                        builder.addOutputArc(triggerDontCare, failedPlace);
+                    }
+
+                }
+                if (failedPlace == 0) {
+                    failedPlaces.push_back(failedPlace);
+                }
+                if (extendedPriorities)
+                    dontCarePriority++;
+            }
+
+            template<typename ValueType>
+            void DftToGspnTransformator<ValueType>::translateSeq(
+                    std::shared_ptr<storm::storage::DFTSeq<ValueType> const> dftSeq) {
+                STORM_LOG_THROW(dftSeq->allChildrenBEs(), storm::exceptions::NotImplementedException,
+                                "Sequence enforcers with gates as children are currently not supported");
+                double xcenter = mDft.getElementLayoutInfo(dftSeq->id()).x;
+                double ycenter = mDft.getElementLayoutInfo(dftSeq->id()).y;
+                u_int64_t failedPlace = 0;
+                if (!smart) {
+                    failedPlace = addFailedPlace(dftSeq, storm::gspn::LayoutInfo(xcenter + 10.0, ycenter - 8.0));
+                    addUnavailablePlace(dftSeq, storm::gspn::LayoutInfo(xcenter + 16.0, ycenter - 8.0));
+                }
+
                 uint64_t tEnable = 0;
                 uint64_t nextPlace = 0;
-                for(auto const& child : dftSeq->children()) {
-                    nextPlace = builder.addPlace(defaultCapacity, j==0 ? 1 : 0, dftSeq->name() + "_next_" + child->name());
-                    if (j>0) {
+                for (size_t i = 0; i < dftSeq->nrChildren(); ++i) {
+                    auto const &child = dftSeq->children().at(i);
+
+                    nextPlace = builder.addPlace(defaultCapacity, i == 0 ? 1 : 0,
+                                                 dftSeq->name() + "_next_" + child->name());
+                    builder.setPlaceLayoutInfo(nextPlace,
+                                               storm::gspn::LayoutInfo(xcenter - 5.0 + i * 3.0, ycenter - 3.0));
+
+                    if (i > 0) {
                         builder.addOutputArc(tEnable, nextPlace);
                     }
-                    tEnable = builder.addImmediateTransition(defaultPriority + 1, 0.0, dftSeq->name() + "_unblock_" +child->name() );
+                    tEnable = builder.addImmediateTransition(getFailPriority(dftSeq), 0.0,
+                                                             dftSeq->name() + "_unblock_" + child->name());
+                    builder.setTransitionLayoutInfo(tEnable,
+                                                    storm::gspn::LayoutInfo(xcenter - 5.0 + i * 3.0, ycenter + 3.0));
                     builder.addInputArc(nextPlace, tEnable);
-                    builder.addInputArc(disabledNodes.at(child->id()), tEnable);
-                    if (j>0) {
-                        builder.addInputArc(failedNodes.at(dftSeq->children().at(j-1)->id()), tEnable);
+                    builder.addInputArc(disabledPlaces.at(child->id()), tEnable);
+                    if (i > 0) {
+                        builder.addInputArc(getFailedPlace(dftSeq->children().at(i - 1)), tEnable);
                     }
-                    ++j;
                 }
-                
-            }
-            
-            template<typename ValueType>
-            uint64_t DftToGspnTransformator<ValueType>::addUnavailableNode(std::shared_ptr<storm::storage::DFTElement<ValueType> const> dftElement, storm::gspn::LayoutInfo const& layoutInfo, bool initialAvailable) {
-                uint64_t unavailableNode = builder.addPlace(defaultCapacity, initialAvailable ? 0 : 1, dftElement->name() + "_unavailable");
-                assert(unavailableNode != 0);
-                unavailableNodes.emplace(dftElement->id(), unavailableNode);
-                builder.setPlaceLayoutInfo(unavailableNode, layoutInfo);
-                return unavailableNode;
-            }
-            
-            template<typename ValueType>
-            uint64_t DftToGspnTransformator<ValueType>::addDisabledPlace(std::shared_ptr<const storm::storage::DFTBE<ValueType> > dftBe) {
-                uint64_t disabledNode = builder.addPlace(dftBe->nrRestrictions(), dftBe->nrRestrictions(), dftBe->name() + "_dabled");
-                disabledNodes.emplace(dftBe->id(), disabledNode);
-                return disabledNode;
-            }
-//			
-			
-			template <typename ValueType>
-            bool DftToGspnTransformator<ValueType>::isBEActive(std::shared_ptr<storm::storage::DFTElement<ValueType> const> dftElement)
-			{
-				// If element is the top element, return true.
-				if (dftElement->id() == mDft.getTopLevelIndex()) {
-					return true;
-				}
-				else { // Else look at all parents.
-					auto parents = dftElement->parents();
-					std::vector<bool> pathValidities;
-					
-					for (std::size_t i = 0; i < parents.size(); i++) {
-						// Add all parents to the vector, except if the parent is a SPARE and the current element is an inactive child of the SPARE.
-						if (parents[i]->type() == storm::storage::DFTElementType::SPARE) {
-							auto children = std::static_pointer_cast<storm::storage::DFTSpare<ValueType> const>(parents[i])->children();
-							if (children[0]->id() != dftElement->id()) {
-								continue;
-							}
-						}
-						
-						pathValidities.push_back(isBEActive(parents[i]));
-					}
-					
-					// Check all vector entries. If one is true, a "valid" path has been found.
-					for (std::size_t i = 0; i < pathValidities.size(); i++) {
-						if (pathValidities[i]) {
-							return true;
-						}
-					}
-				}
-				
-				// No "valid" path found. BE is inactive.
-				return false;
-			}
-			
-			template <typename ValueType>
-            uint64_t DftToGspnTransformator<ValueType>::getFailPriority(std::shared_ptr<storm::storage::DFTElement<ValueType> const> dftElement)
-			{
-                return mDft.maxRank() - dftElement->rank() + 2;
-			}
+                // Dont Care
+                if (dontCareElements.count(dftSeq->id())) {
+                    if (!mergedDCFailed) {
+                        u_int64_t dontCarePlace = builder.addPlace(1, 0, dftSeq->name() + STR_DONTCARE);
+                        builder.setPlaceLayoutInfo(dontCarePlace,
+                                                   storm::gspn::LayoutInfo(xcenter + 10.0, ycenter - 8.0));
+                        for (auto const &child : dftSeq->children()) {
+                            if (dontCareElements.count(child->id())) {
+                                u_int64_t childDontCare = dontcareTransitions.at(child->id());
+                                builder.addInputArc(dontCarePlace, childDontCare);
+                            }
+                        }
+                    } else {
+                        if (failedPlace == 0) {
+                            failedPlace = addFailedPlace(dftSeq,
+                                                         storm::gspn::LayoutInfo(xcenter + 10.0, ycenter - 8.0));
+                        }
+                        for (auto const &child : dftSeq->children()) {
+                            if (dontCareElements.count(child->id())) {
+                                u_int64_t childDontCare = dontcareTransitions.at(child->id());
+                                builder.addInputArc(failedPlace, childDontCare);
+                            }
+                        }
+                    }
 
-			
-			template <typename ValueType>
-            void DftToGspnTransformator<ValueType>::drawGSPNRestrictions() {
-			}
+                }
 
-			template <typename ValueType>
-            gspn::GSPN* DftToGspnTransformator<ValueType>::obtainGSPN() {
-                return builder.buildGspn();
             }
-			
+
+            template<typename ValueType>
+            uint64_t
+            DftToGspnTransformator<ValueType>::addFailedPlace(
+                    std::shared_ptr<storm::storage::DFTElement<ValueType> const> dftElement,
+                    storm::gspn::LayoutInfo const &layoutInfo,
+                    bool initialFailed) {
+                uint64_t failedPlace = builder.addPlace(defaultCapacity, initialFailed ? 1 : 0,
+                                                        dftElement->name() + STR_FAILED);
+                assert(failedPlaces.size() == dftElement->id());
+                failedPlaces.push_back(failedPlace);
+                builder.setPlaceLayoutInfo(failedPlace, layoutInfo);
+                return failedPlace;
+            }
+
+
+            template<typename ValueType>
+            uint64_t DftToGspnTransformator<ValueType>::addUnavailablePlace(
+                    std::shared_ptr<storm::storage::DFTElement<ValueType> const> dftElement,
+                    storm::gspn::LayoutInfo const &layoutInfo, bool initialAvailable) {
+                unsigned int capacity = 2; // Unavailable place has capacity 2
+                uint64_t unavailablePlace = builder.addPlace(capacity, initialAvailable ? 0 : 1,
+                                                             dftElement->name() + "_unavail");
+                unavailablePlaces.emplace(dftElement->id(), unavailablePlace);
+                builder.setPlaceLayoutInfo(unavailablePlace, layoutInfo);
+                return unavailablePlace;
+            }
+
+            template<typename ValueType>
+            uint64_t
+            DftToGspnTransformator<ValueType>::addDisabledPlace(
+                    std::shared_ptr<const storm::storage::DFTBE<ValueType> > dftBe,
+                    storm::gspn::LayoutInfo const &layoutInfo) {
+                uint64_t disabledPlace = builder.addPlace(dftBe->nrRestrictions(), dftBe->nrRestrictions(),
+                                                          dftBe->name() + "_dabled");
+                disabledPlaces.emplace(dftBe->id(), disabledPlace);
+                builder.setPlaceLayoutInfo(disabledPlace, layoutInfo);
+                return disabledPlace;
+            }
+
+            template<typename ValueType>
+            uint64_t
+            DftToGspnTransformator<ValueType>::addDontcareTransition(
+                    std::shared_ptr<const storm::storage::DFTElement<ValueType> > dftElement,
+                    storm::gspn::LayoutInfo const &layoutInfo) {
+                uint64_t dontcareTransition;
+                dontcareTransition = builder.addImmediateTransition(dontCarePriority, 0.0,
+                                                                        dftElement->name() + STR_DONTCARE +
+                                                                        "_transition");
+                dontcareTransitions.emplace(dftElement->id(), dontcareTransition);
+                builder.setTransitionLayoutInfo(dontcareTransition, layoutInfo);
+                return dontcareTransition;
+            }
+
+            template<typename ValueType>
+            bool DftToGspnTransformator<ValueType>::isActiveInitially(
+                    std::shared_ptr<storm::storage::DFTElement<ValueType> const> dftElement) {
+                // If element is in the top module, return true.
+                return !mDft.hasRepresentant(dftElement->id());
+            }
+
+            template<typename ValueType>
+            uint64_t DftToGspnTransformator<ValueType>::getFailPriority(
+                    std::shared_ptr<storm::storage::DFTElement<ValueType> const> dftElement) {
+                // Return the value given in the field
+                return priorities.at(dftElement->id());
+            }
+
+
             // Explicitly instantiate the class.
-            template class DftToGspnTransformator<double>;
-            
+            template
+            class DftToGspnTransformator<double>;
 
-    #ifdef STORM_HAVE_CARL
+#ifdef STORM_HAVE_CARL
             // template class DftToGspnTransformator<storm::RationalFunction>;
-    #endif
+#endif
 
         } // namespace dft
     } // namespace transformations

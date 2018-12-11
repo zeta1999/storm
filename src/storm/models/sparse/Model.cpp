@@ -56,8 +56,8 @@ namespace storm {
                     STORM_LOG_THROW(stateCount == this->getTransitionMatrix().getRowCount(), storm::exceptions::IllegalArgumentException, "Can not create deterministic model: Number of rows of transition matrix does not match state count.");
                     STORM_LOG_THROW(stateCount == this->getTransitionMatrix().getColumnCount(), storm::exceptions::IllegalArgumentException, "Can not create deterministic model: Number of columns of transition matrix does not match state count.");
                     STORM_LOG_ERROR_COND(!components.player1Matrix.is_initialized(), "Player 1 matrix given for a model that is no stochastic game (will be ignored).");
-                } else if (this->isOfType(ModelType::Mdp) || this->isOfType(ModelType::MarkovAutomaton)) {
-                    STORM_LOG_THROW(stateCount == this->getTransitionMatrix().getRowGroupCount(), storm::exceptions::IllegalArgumentException, "Can not create nondeterministic model: Number of row groups of transition matrix does not match state count.");
+                } else if (this->isOfType(ModelType::Mdp) || this->isOfType(ModelType::MarkovAutomaton) || this->isOfType(ModelType::Pomdp)) {
+                    STORM_LOG_THROW(stateCount == this->getTransitionMatrix().getRowGroupCount(), storm::exceptions::IllegalArgumentException, "Can not create nondeterministic model: Number of row groups (" << this->getTransitionMatrix().getRowGroupCount() << ") of transition matrix does not match state count (" << stateCount << ").");
                     STORM_LOG_THROW(stateCount == this->getTransitionMatrix().getColumnCount(), storm::exceptions::IllegalArgumentException, "Can not create nondeterministic model: Number of columns of transition matrix does not match state count.");
                     STORM_LOG_ERROR_COND(!components.player1Matrix.is_initialized(), "Player 1 matrix given for a model that is no stochastic game (will be ignored).");
                 } else {
@@ -74,9 +74,9 @@ namespace storm {
                     STORM_LOG_THROW(!components.exitRates.is_initialized() || components.exitRates->size() == stateCount, storm::exceptions::IllegalArgumentException, "Size of exit rate vector does not match state count.");
                     STORM_LOG_THROW(this->isOfType(ModelType::Ctmc) || components.markovianStates.is_initialized(), storm::exceptions::IllegalArgumentException, "Can not create Markov Automaton: no Markovian states given.");
                 } else {
-                    STORM_LOG_ERROR_COND(!components.rateTransitions && !components.exitRates.is_initialized(), "Rates specified for discrete-time model. The rates will be ignored.");
+                    STORM_LOG_WARN_COND(!components.rateTransitions && !components.exitRates.is_initialized(), "Rates specified for discrete-time model. The rates will be ignored.");
                 }
-                STORM_LOG_ERROR_COND(this->isOfType(ModelType::MarkovAutomaton) || !components.markovianStates.is_initialized(), "Markovian states given for a model that is not a Markov automaton (will be ignored).");
+                STORM_LOG_WARN_COND(this->isOfType(ModelType::MarkovAutomaton) || !components.markovianStates.is_initialized(), "Markovian states given for a model that is not a Markov automaton (will be ignored).");
             }
             
             template<typename ValueType, typename RewardModelType>
@@ -98,7 +98,12 @@ namespace storm {
             uint_fast64_t Model<ValueType, RewardModelType>::getNumberOfTransitions() const {
                 return this->getTransitionMatrix().getNonzeroEntryCount();
             }
-            
+
+            template<typename ValueType, typename RewardModelType>
+            uint_fast64_t Model<ValueType, RewardModelType>::getNumberOfChoices() const {
+                return this->getTransitionMatrix().getRowCount();
+            }
+
             template<typename ValueType, typename RewardModelType>
             storm::storage::BitVector const& Model<ValueType, RewardModelType>::getInitialStates() const {
                 return this->getStates("init");
@@ -329,9 +334,9 @@ namespace storm {
             }
             
             template<typename ValueType, typename RewardModelType>
-            void Model<ValueType, RewardModelType>::writeDotToStream(std::ostream& outStream, bool includeLabeling, storm::storage::BitVector const* subsystem, std::vector<ValueType> const* firstValue, std::vector<ValueType> const* secondValue, std::vector<uint_fast64_t> const* stateColoring, std::vector<std::string> const* colors, std::vector<uint_fast64_t>*, bool finalizeOutput) const {
+            void Model<ValueType, RewardModelType>::writeDotToStream(std::ostream& outStream, bool includeLabeling, bool linebreakLabel, storm::storage::BitVector const* subsystem, std::vector<ValueType> const* firstValue, std::vector<ValueType> const* secondValue, std::vector<uint_fast64_t> const* stateColoring, std::vector<std::string> const* colors, std::vector<uint_fast64_t>*, bool finalizeOutput) const {
                 outStream << "digraph model {" << std::endl;
-                
+
                 // Write all states to the stream.
                 for (uint_fast64_t state = 0, highestStateIndex = this->getNumberOfStates() - 1; state <= highestStateIndex; ++state) {
                     if (subsystem == nullptr || subsystem->get(state)) {
@@ -353,7 +358,11 @@ namespace storm {
                                     bool includeComma = false;
                                     for (std::string const& label : this->getLabelsOfState(state)) {
                                         if (includeComma) {
-                                            outStream << ", ";
+                                            if (linebreakLabel) {
+                                                outStream << ",\n";
+                                            } else {
+                                                outStream << ", ";
+                                            }
                                         } else {
                                             includeComma = true;
                                         }
@@ -418,11 +427,7 @@ namespace storm {
             
             template<typename ValueType, typename RewardModelType>
             bool Model<ValueType, RewardModelType>::supportsParameters() const {
-#ifdef STORM_HAVE_CARL
                 return std::is_same<ValueType, storm::RationalFunction>::value;
-#else
-		return false;
-#endif
             }
             
             template<typename ValueType, typename RewardModelType>

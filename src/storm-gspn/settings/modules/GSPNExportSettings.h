@@ -10,7 +10,7 @@ namespace storm {
             class GSPNExportSettings : public ModuleSettings {
             public:
                 /*!
-                 * Creates a new JaniExport setting
+                 * Creates a new GSPNExport setting
                  */
                 GSPNExportSettings();
                 
@@ -37,6 +37,26 @@ namespace storm {
                  *
                  */
                 std::string getWriteToPnproFilename() const;
+
+                bool isWriteToJsonSet() const;
+
+                /**
+                 *
+                 */
+                std::string getWriteToJsonFilename() const;
+                
+
+                bool isWriteToJaniSet() const;
+
+                /**
+                 *
+                 */
+                std::string getWriteToJaniFilename() const;
+                
+                /*!
+                 * Returns whether a set of standard properties is to be added when exporting to jani
+                 */
+                bool isAddJaniPropertiesSet() const;
                 
                 bool isDisplayStatsSet() const;
                 
@@ -54,6 +74,9 @@ namespace storm {
                 static const std::string writeToDotOptionName;
                 static const std::string writeToPnmlOptionName;
                 static const std::string writeToPnproOptionName;
+                static const std::string writeToJsonOptionName;
+                static const std::string writeToJaniOptionName;
+                static const std::string addJaniPropertiesOptionName;
                 static const std::string displayStatsOptionName;
                 static const std::string writeStatsOptionName;
                 

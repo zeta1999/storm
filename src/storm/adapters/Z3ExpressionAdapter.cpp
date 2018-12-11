@@ -1,5 +1,7 @@
 #include "storm/adapters/Z3ExpressionAdapter.h"
 
+#include <cstdint>
+
 #include "storm/storage/expressions/Expressions.h"
 #include "storm/storage/expressions/ExpressionManager.h"
 #include "storm/utility/macros.h"
@@ -12,14 +14,25 @@ namespace storm {
     namespace adapters {
 
 #ifdef STORM_HAVE_Z3
+        
+#ifdef STORM_Z3_API_USES_STANDARD_INTEGERS
+            typedef int64_t Z3_SIGNED_INTEGER;
+            typedef uint64_t Z3_UNSIGNED_INTEGER;
+#else
+            typedef long long Z3_SIGNED_INTEGER;
+            typedef unsigned long long Z3_UNSIGNED_INTEGER;
+#endif
+        
             Z3ExpressionAdapter::Z3ExpressionAdapter(storm::expressions::ExpressionManager& manager, z3::context& context) : manager(manager), context(context), additionalAssertions(), variableToExpressionMapping() {
                 // Intentionally left empty.
             }
             
             z3::expr Z3ExpressionAdapter::translateExpression(storm::expressions::Expression const& expression) {
                 STORM_LOG_ASSERT(expression.getManager() == this->manager, "Invalid expression for solver.");
+
                 z3::expr result = boost::any_cast<z3::expr>(expression.getBaseExpression().accept(*this, boost::none));
-                
+                expressionCache.clear();
+
                 for (z3::expr const& assertion : additionalAssertions) {
                     result = result && assertion;
                 }
@@ -131,17 +144,17 @@ namespace storm {
                             case Z3_OP_ANUM:
                                 // Arithmetic numeral.
                                 if (expr.is_int() && expr.is_const()) {
-                                    long long value;
+                                    Z3_SIGNED_INTEGER value;
                                     if (Z3_get_numeral_int64(expr.ctx(), expr, &value)) {
                                         return manager.integer(value);
                                     } else {
                                         STORM_LOG_THROW(false, storm::exceptions::ExpressionEvaluationException, "Failed to convert Z3 expression. Expression is constant integer and value does not fit into 64-bit integer.");
                                     }
                                 } else if (expr.is_real() && expr.is_const()) {
-                                    long long num;
-                                    long long den;
+                                    Z3_SIGNED_INTEGER num;
+                                    Z3_SIGNED_INTEGER den;
                                     if (Z3_get_numeral_rational_int64(expr.ctx(), expr, &num, &den)) {
-                                        return manager.rational(storm::utility::convertNumber<storm::RationalNumber>((int_fast64_t) num) / storm::utility::convertNumber<storm::RationalNumber>((int_fast64_t) den));
+                                        return manager.rational(storm::utility::convertNumber<storm::RationalNumber>(static_cast<int_fast64_t>(num)) / storm::utility::convertNumber<storm::RationalNumber>(static_cast<int_fast64_t>(den)));
                                     } else {
                                         return manager.rational(storm::utility::convertNumber<storm::RationalNumber>(std::string(Z3_get_numeral_string(expr.ctx(), expr))));
                                     }
@@ -160,124 +173,223 @@ namespace storm {
             }
 
             boost::any Z3ExpressionAdapter::visit(storm::expressions::BinaryBooleanFunctionExpression const& expression, boost::any const& data)  {
+                auto cacheIt = expressionCache.find(&expression);
+                if (cacheIt != expressionCache.end()) {
+                    return cacheIt->second;
+                }
+                
                 z3::expr leftResult = boost::any_cast<z3::expr>(expression.getFirstOperand()->accept(*this, data));
                 z3::expr rightResult = boost::any_cast<z3::expr>(expression.getSecondOperand()->accept(*this, data));
                 
+                z3::expr result(context);
                 switch(expression.getOperatorType()) {
 					case storm::expressions::BinaryBooleanFunctionExpression::OperatorType::And:
-                        return leftResult && rightResult;
+                        result = leftResult && rightResult;
+                        break;
 					case storm::expressions::BinaryBooleanFunctionExpression::OperatorType::Or:
-                        return leftResult || rightResult;
+                        result = leftResult || rightResult;
+                        break;
 					case storm::expressions::BinaryBooleanFunctionExpression::OperatorType::Xor:
-						return z3::expr(context, Z3_mk_xor(context, leftResult, rightResult));
+						result = z3::expr(context, Z3_mk_xor(context, leftResult, rightResult));
+                        break;
 					case storm::expressions::BinaryBooleanFunctionExpression::OperatorType::Implies:
-						return z3::expr(context, Z3_mk_implies(context, leftResult, rightResult));
+						result = z3::expr(context, Z3_mk_implies(context, leftResult, rightResult));
+                        break;
 					case storm::expressions::BinaryBooleanFunctionExpression::OperatorType::Iff:
-						return z3::expr(context, Z3_mk_iff(context, leftResult, rightResult));
+						result = z3::expr(context, Z3_mk_iff(context, leftResult, rightResult));
+                        break;
                     default:
                         STORM_LOG_THROW(false, storm::exceptions::ExpressionEvaluationException, "Cannot evaluate expression: unknown boolean binary operator '" << static_cast<int>(expression.getOperatorType()) << "' in expression " << expression << ".");
                 }
                 
+                expressionCache.emplace(&expression, result);
+                return result;
             }
             
             boost::any Z3ExpressionAdapter::visit(storm::expressions::BinaryNumericalFunctionExpression const& expression, boost::any const& data)  {
+                auto cacheIt = expressionCache.find(&expression);
+                if (cacheIt != expressionCache.end()) {
+                    return cacheIt->second;
+                }
+                
                 z3::expr leftResult = boost::any_cast<z3::expr>(expression.getFirstOperand()->accept(*this, data));
                 z3::expr rightResult = boost::any_cast<z3::expr>(expression.getSecondOperand()->accept(*this, data));
         
+                z3::expr result(context);
                 switch(expression.getOperatorType()) {
 					case storm::expressions::BinaryNumericalFunctionExpression::OperatorType::Plus:
-                        return leftResult + rightResult;
+                        result = leftResult + rightResult;
+                        break;
 					case storm::expressions::BinaryNumericalFunctionExpression::OperatorType::Minus:
-                        return leftResult - rightResult;
+                        result = leftResult - rightResult;
+                        break;
 					case storm::expressions::BinaryNumericalFunctionExpression::OperatorType::Times:
-                        return leftResult * rightResult;
+                        result = leftResult * rightResult;
+                        break;
 					case storm::expressions::BinaryNumericalFunctionExpression::OperatorType::Divide:
-                        return leftResult / rightResult;
+                        if (leftResult.is_int() && rightResult.is_int()) {
+                            leftResult = z3::expr(context, Z3_mk_int2real(context, leftResult));
+                        }
+                        result = leftResult / rightResult;
+                        break;
 					case storm::expressions::BinaryNumericalFunctionExpression::OperatorType::Min:
-                        return ite(leftResult <= rightResult, leftResult, rightResult);
+                        result = ite(leftResult <= rightResult, leftResult, rightResult);
+                        break;
 					case storm::expressions::BinaryNumericalFunctionExpression::OperatorType::Max:
-                        return ite(leftResult >= rightResult, leftResult, rightResult);
+                        result = ite(leftResult >= rightResult, leftResult, rightResult);
+                        break;
 					case storm::expressions::BinaryNumericalFunctionExpression::OperatorType::Power:
-                        return pw(leftResult,rightResult);
+                        result = pw(leftResult,rightResult);
+                        break;
                     default:
                         STORM_LOG_THROW(false, storm::exceptions::ExpressionEvaluationException, "Cannot evaluate expression: unknown numerical binary operator '" << static_cast<int>(expression.getOperatorType()) << "' in expression " << expression << ".");
                 }
+                
+                expressionCache.emplace(&expression, result);
+                return result;
             }
             
             boost::any Z3ExpressionAdapter::visit(storm::expressions::BinaryRelationExpression const& expression, boost::any const& data)  {
+                auto cacheIt = expressionCache.find(&expression);
+                if (cacheIt != expressionCache.end()) {
+                    return cacheIt->second;
+                }
+
                 z3::expr leftResult = boost::any_cast<z3::expr>(expression.getFirstOperand()->accept(*this, data));
                 z3::expr rightResult = boost::any_cast<z3::expr>(expression.getSecondOperand()->accept(*this, data));
     
+                z3::expr result(context);
                 switch(expression.getRelationType()) {
 					case storm::expressions::BinaryRelationExpression::RelationType::Equal:
-                        return leftResult == rightResult;
+                        result = leftResult == rightResult;
+                        break;
 					case storm::expressions::BinaryRelationExpression::RelationType::NotEqual:
-                        return leftResult != rightResult;
+                        result = leftResult != rightResult;
+                        break;
 					case storm::expressions::BinaryRelationExpression::RelationType::Less:
-                        return leftResult < rightResult;
+                        result = leftResult < rightResult;
+                        break;
 					case storm::expressions::BinaryRelationExpression::RelationType::LessOrEqual:
-                        return leftResult <= rightResult;
+                        result = leftResult <= rightResult;
+                        break;
 					case storm::expressions::BinaryRelationExpression::RelationType::Greater:
-                        return leftResult > rightResult;
+                        result = leftResult > rightResult;
+                        break;
 					case storm::expressions::BinaryRelationExpression::RelationType::GreaterOrEqual:
-                        return leftResult >= rightResult;
+                        result = leftResult >= rightResult;
+                        break;
                     default:
                         STORM_LOG_THROW(false, storm::exceptions::ExpressionEvaluationException, "Cannot evaluate expression: unknown boolean binary operator '" << static_cast<int>(expression.getRelationType()) << "' in expression " << expression << ".");
                 }    
+
+                expressionCache.emplace(&expression, result);
+                return result;
             }
             
             boost::any Z3ExpressionAdapter::visit(storm::expressions::BooleanLiteralExpression const& expression, boost::any const&)  {
-                return context.bool_val(expression.getValue());
+                auto cacheIt = expressionCache.find(&expression);
+                if (cacheIt != expressionCache.end()) {
+                    return cacheIt->second;
+                }
+
+                z3::expr result = context.bool_val(expression.getValue());
+                
+                expressionCache.emplace(&expression, result);
+                return result;
             }
             
             boost::any Z3ExpressionAdapter::visit(storm::expressions::RationalLiteralExpression const& expression, boost::any const&)  {
+                auto cacheIt = expressionCache.find(&expression);
+                if (cacheIt != expressionCache.end()) {
+                    return cacheIt->second;
+                }
+
                 std::stringstream fractionStream;
                 fractionStream << expression.getValue();
-                return context.real_val(fractionStream.str().c_str());
+                z3::expr result = context.real_val(fractionStream.str().c_str());
+
+                expressionCache.emplace(&expression, result);
+                return result;
             }
             
             boost::any Z3ExpressionAdapter::visit(storm::expressions::IntegerLiteralExpression const& expression, boost::any const&)  {
-                return context.int_val(static_cast<long long>(expression.getValue()));
+                auto cacheIt = expressionCache.find(&expression);
+                if (cacheIt != expressionCache.end()) {
+                    return cacheIt->second;
+                }
+
+                z3::expr result = context.int_val(static_cast<Z3_SIGNED_INTEGER>(expression.getValue()));
+                
+                expressionCache.emplace(&expression, result);
+                return result;
             }
             
             boost::any Z3ExpressionAdapter::visit(storm::expressions::UnaryBooleanFunctionExpression const& expression, boost::any const& data)  {
-                z3::expr childResult = boost::any_cast<z3::expr>(expression.getOperand()->accept(*this, data));
+                auto cacheIt = expressionCache.find(&expression);
+                if (cacheIt != expressionCache.end()) {
+                    return cacheIt->second;
+                }
+
+                z3::expr result = boost::any_cast<z3::expr>(expression.getOperand()->accept(*this, data));
                 
                 switch (expression.getOperatorType()) {
 					case storm::expressions::UnaryBooleanFunctionExpression::OperatorType::Not:
-                        return !childResult;
+                        result = !result;
+                        break;
                     default:
                         STORM_LOG_THROW(false, storm::exceptions::ExpressionEvaluationException, "Cannot evaluate expression: unknown boolean binary operator '" << static_cast<int>(expression.getOperatorType()) << "' in expression " << expression << ".");
-                }    
+                }
+                
+                expressionCache.emplace(&expression, result);
+                return result;
             }
             
             boost::any Z3ExpressionAdapter::visit(storm::expressions::UnaryNumericalFunctionExpression const& expression, boost::any const& data)  {
-                z3::expr childResult = boost::any_cast<z3::expr>(expression.getOperand()->accept(*this, data));
+                auto cacheIt = expressionCache.find(&expression);
+                if (cacheIt != expressionCache.end()) {
+                    return cacheIt->second;
+                }
+
+                z3::expr result = boost::any_cast<z3::expr>(expression.getOperand()->accept(*this, data));
                 
                 switch(expression.getOperatorType()) {
 					case storm::expressions::UnaryNumericalFunctionExpression::OperatorType::Minus:
-                        return 0 - childResult;
+                        result = 0 - result;
+                        break;
 					case storm::expressions::UnaryNumericalFunctionExpression::OperatorType::Floor: {
                         storm::expressions::Variable freshAuxiliaryVariable = manager.declareFreshVariable(manager.getIntegerType(), true);
                         z3::expr floorVariable = context.int_const(freshAuxiliaryVariable.getName().c_str());
-						additionalAssertions.push_back(z3::expr(context, Z3_mk_int2real(context, floorVariable)) <= childResult && childResult < (z3::expr(context, Z3_mk_int2real(context, floorVariable)) + 1));
-						return floorVariable;
+						additionalAssertions.push_back(z3::expr(context, Z3_mk_int2real(context, floorVariable)) <= result && result < (z3::expr(context, Z3_mk_int2real(context, floorVariable)) + 1));
+						result = floorVariable;
+                        break;
 					}
 					case storm::expressions::UnaryNumericalFunctionExpression::OperatorType::Ceil:{
                         storm::expressions::Variable freshAuxiliaryVariable = manager.declareFreshVariable(manager.getIntegerType(), true);
                         z3::expr ceilVariable = context.int_const(freshAuxiliaryVariable.getName().c_str());
-						additionalAssertions.push_back(z3::expr(context, Z3_mk_int2real(context, ceilVariable)) - 1 <= childResult && childResult < z3::expr(context, Z3_mk_int2real(context, ceilVariable)));
-						return ceilVariable;
+						additionalAssertions.push_back(z3::expr(context, Z3_mk_int2real(context, ceilVariable)) - 1 < result && result <= z3::expr(context, Z3_mk_int2real(context, ceilVariable)));
+						result = ceilVariable;
+                        break;
 					}
                     default: STORM_LOG_THROW(false, storm::exceptions::ExpressionEvaluationException, "Cannot evaluate expression: unknown numerical unary operator '" << static_cast<int>(expression.getOperatorType()) << "'.");
                 }
+
+                expressionCache.emplace(&expression, result);
+                return result;
             }
 
             boost::any Z3ExpressionAdapter::visit(storm::expressions::IfThenElseExpression const& expression, boost::any const& data)  {
+                auto cacheIt = expressionCache.find(&expression);
+                if (cacheIt != expressionCache.end()) {
+                    return cacheIt->second;
+                }
+
                 z3::expr conditionResult = boost::any_cast<z3::expr>(expression.getCondition()->accept(*this, data));
                 z3::expr thenResult = boost::any_cast<z3::expr>(expression.getThenExpression()->accept(*this, data));
                 z3::expr elseResult = boost::any_cast<z3::expr>(expression.getElseExpression()->accept(*this, data));
-                return z3::expr(context, Z3_mk_ite(context, conditionResult, thenResult, elseResult));
+                z3::expr result = z3::expr(context, Z3_mk_ite(context, conditionResult, thenResult, elseResult));
+                
+                expressionCache.emplace(&expression, result);
+                return result;
             }
             
             boost::any Z3ExpressionAdapter::visit(storm::expressions::VariableExpression const& expression, boost::any const&)  {

@@ -332,6 +332,20 @@ namespace storm {
             Add<LibraryType, ValueType> renameVariables(std::set<storm::expressions::Variable> const& from, std::set<storm::expressions::Variable> const& to) const;
             
             /*!
+             * Renames the given meta variables in the ADD. The number of the underlying DD variables of the from meta
+             * variable set needs to be at least as large as the to meta variable set. If the amount of variables coincide,
+             * this operation coincides with renameVariables. Otherwise, it first abstracts from the superfluous variables
+             * and then performs the renaming.
+             *
+             * @param from The meta variables to be renamed. The current ADD needs to contain all these meta variables.
+             * @param to The meta variables that are the target of the renaming process. The current ADD must not contain
+             * any of these meta variables.
+             * @return The resulting ADD.
+             */
+            Add<LibraryType, ValueType> renameVariablesAbstract(std::set<storm::expressions::Variable> const& from, std::set<storm::expressions::Variable> const& to) const;
+
+            
+            /*!
              * Swaps the given pairs of meta variables in the ADD. The pairs of meta variables must be guaranteed to have
              * the same number of underlying ADD variables.
              *
@@ -627,6 +641,38 @@ namespace storm {
             storm::storage::SparseMatrix<ValueType> toMatrix(std::set<storm::expressions::Variable> const& groupMetaVariables, storm::dd::Odd const& rowOdd, storm::dd::Odd const& columnOdd) const;
             
             /*!
+             * Converts the ADD to a row-grouped (sparse) matrix. The given offset-labeled DDs are used to determine the
+             * correct row and column, respectively, for each entry. If requested, it builds a labeling of the rows
+             * that is derived from the group variable encodings. Note: this function assumes that the meta variables
+             * used to distinguish different row groups are at the very top of the ADD.
+             *
+             * @param rowMetaVariables The meta variables that encode the rows of the matrix.
+             * @param columnMetaVariables The meta variables that encode the columns of the matrix.
+             * @param groupMetaVariables The meta variables that are used to distinguish different row groups.
+             * @param rowOdd The ODD used for determining the correct row.
+             * @param columnOdd The ODD used for determining the correct column.
+             * @param buildLabeling If false, no labeling vector is built.
+             * @return The matrix that is represented by this ADD and a vector corresponding to row labeling
+             * (if requested).
+             */
+            struct MatrixAndLabeling {
+                MatrixAndLabeling() = default;
+                
+                MatrixAndLabeling(storm::storage::SparseMatrix<ValueType> const& matrix) : matrix(matrix) {
+                    // Intentionally left empty.
+                }
+
+                MatrixAndLabeling(storm::storage::SparseMatrix<ValueType>&& matrix) : matrix(std::move(matrix)) {
+                    // Intentionally left empty.
+                }
+
+                storm::storage::SparseMatrix<ValueType> matrix;
+                std::vector<std::vector<uint64_t>> labelings;
+            };
+            
+            MatrixAndLabeling toLabeledMatrix(std::set<storm::expressions::Variable> const& rowMetaVariables, std::set<storm::expressions::Variable> const& columnMetaVariables, std::set<storm::expressions::Variable> const& groupMetaVariables, storm::dd::Odd const& rowOdd, storm::dd::Odd const& columnOdd, std::vector<std::set<storm::expressions::Variable>> const& labelMetaVariables = std::vector<std::set<storm::expressions::Variable>>()) const;
+            
+            /*!
              * Converts the ADD to a row-grouped (sparse) matrix and the given vector to a row-grouped vector.
              * The given offset-labeled DDs are used to determine the correct row and column, respectively, for each
              * entry. Note: this function assumes that the meta variables used to distinguish different row groups are
@@ -706,22 +752,6 @@ namespace storm {
              * We provide a conversion operator from the BDD to its internal type to ease calling the internal functions.
              */
             operator InternalAdd<LibraryType, ValueType>() const;
-            
-            /*!
-             * Converts the ADD to a row-grouped (sparse) double matrix. If the optional vector is given, it is also
-             * translated to an explicit row-grouped vector with the same row-grouping. The given offset-labeled DDs
-             * are used to determine the correct row and column, respectively, for each entry. Note: this function
-             * assumes that the meta variables used to distinguish different row groups are at the very top of the ADD.
-             *
-             * @param rowMetaVariables The meta variables that encode the rows of the matrix.
-             * @param columnMetaVariables The meta variables that encode the columns of the matrix.
-             * @param groupMetaVariables The meta variables that are used to distinguish different row groups.
-             * @param rowOdd The ODD used for determining the correct row.
-             * @param columnOdd The ODD used for determining the correct column.
-             * @return The matrix that is represented by this ADD and and a vector corresponding to the symbolic vector
-             * (if it was given).
-             */
-            storm::storage::SparseMatrix<ValueType> toMatrix(std::set<storm::expressions::Variable> const& rowMetaVariables, std::set<storm::expressions::Variable> const& columnMetaVariables, std::set<storm::expressions::Variable> const& groupMetaVariables, storm::dd::Odd const& rowOdd, storm::dd::Odd const& columnOdd) const;
             
             /*!
              * Converts the ADD to a row-grouped (sparse) double matrix and the given vector to an equally row-grouped

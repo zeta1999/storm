@@ -45,13 +45,14 @@ namespace storm {
         }
         
         template <typename SparseModelType, typename ConstantType>
-        void SparseMdpParameterLiftingModelChecker<SparseModelType, ConstantType>::specify(Environment const& env, std::shared_ptr<storm::models::ModelBase> parametricModel, CheckTask<storm::logic::Formula, typename SparseModelType::ValueType> const& checkTask) {
+        void SparseMdpParameterLiftingModelChecker<SparseModelType, ConstantType>::specify(Environment const& env, std::shared_ptr<storm::models::ModelBase> parametricModel, CheckTask<storm::logic::Formula, typename SparseModelType::ValueType> const& checkTask, bool generateRegionSplitEstimates, bool allowModelSimplifications) {
             auto mdp = parametricModel->template as<SparseModelType>();
-            specify(env, mdp, checkTask, false);
+            specify_internal(env, mdp, checkTask, generateRegionSplitEstimates, !allowModelSimplifications);
         }
         
         template <typename SparseModelType, typename ConstantType>
-        void SparseMdpParameterLiftingModelChecker<SparseModelType, ConstantType>::specify(Environment const& env, std::shared_ptr<SparseModelType> parametricModel, CheckTask<storm::logic::Formula, typename SparseModelType::ValueType> const& checkTask, bool skipModelSimplification) {
+        void SparseMdpParameterLiftingModelChecker<SparseModelType, ConstantType>::specify_internal(Environment const& env, std::shared_ptr<SparseModelType> parametricModel, CheckTask<storm::logic::Formula, typename SparseModelType::ValueType> const& checkTask, bool generateRegionSplitEstimates, bool skipModelSimplification) {
+
 
             STORM_LOG_ASSERT(this->canHandle(parametricModel, checkTask), "specified model and formula can not be handled by this.");
          
@@ -274,8 +275,8 @@ namespace storm {
             }
             
             // Invoke the solver
-            if(stepBound) {
-                assert(*stepBound > 0);
+            if (stepBound) {
+                STORM_LOG_ASSERT(*stepBound > 0, "Expected positive step bound.");
                 solver->repeatedMultiply(env, this->currentCheckTask->getOptimizationDirection(), dirForParameters, x, &parameterLifter->getVector(), *stepBound);
             } else {
                 solver->solveGame(env, this->currentCheckTask->getOptimizationDirection(), dirForParameters, x, parameterLifter->getVector());
@@ -292,7 +293,7 @@ namespace storm {
             // Get the result for the complete model (including maybestates)
             std::vector<ConstantType> result = resultsForNonMaybeStates;
             auto maybeStateResIt = x.begin();
-            for(auto const& maybeState : maybeStates) {
+            for (auto const& maybeState : maybeStates) {
                 result[maybeState] = *maybeStateResIt;
                 ++maybeStateResIt;
             }

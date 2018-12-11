@@ -15,8 +15,8 @@
 #include "storm/settings/modules/GeneralSettings.h"
 #include "storm/settings/modules/CoreSettings.h"
 #include "storm/settings/modules/IOSettings.h"
+#include "storm/settings/modules/ModelCheckerSettings.h"
 #include "storm/settings/modules/DebugSettings.h"
-#include "storm/settings/modules/CounterexampleGeneratorSettings.h"
 #include "storm/settings/modules/CuddSettings.h"
 #include "storm/settings/modules/BuildSettings.h"
 #include "storm/settings/modules/SylvanSettings.h"
@@ -30,13 +30,13 @@
 #include "storm/settings/modules/GlpkSettings.h"
 #include "storm/settings/modules/GurobiSettings.h"
 #include "storm/settings/modules/Smt2SmtSolverSettings.h"
-#include "storm/settings/modules/TopologicalValueIterationEquationSolverSettings.h"
+#include "storm/settings/modules/TopologicalEquationSolverSettings.h"
 #include "storm/settings/modules/ExplorationSettings.h"
 #include "storm/settings/modules/ResourceSettings.h"
 #include "storm/settings/modules/AbstractionSettings.h"
-#include "storm/settings/modules/JaniExportSettings.h"
 #include "storm/settings/modules/JitBuilderSettings.h"
 #include "storm/settings/modules/MultiObjectiveSettings.h"
+#include "storm/settings/modules/MultiplierSettings.h"
 #include "storm/utility/macros.h"
 #include "storm/utility/file.h"
 #include "storm/settings/Option.h"
@@ -137,7 +137,7 @@ namespace storm {
             }
 
             // Include the options from a possibly specified configuration file, but don't overwrite existing settings.
-            if (storm::settings::getModule<storm::settings::modules::GeneralSettings>().isConfigSet()) {
+            if (storm::settings::hasModule<storm::settings::modules::GeneralSettings>() && storm::settings::getModule<storm::settings::modules::GeneralSettings>().isConfigSet()) {
                 this->setFromConfigurationFile(storm::settings::getModule<storm::settings::modules::GeneralSettings>().getConfigFilename());
             }
             
@@ -178,7 +178,10 @@ namespace storm {
                 // Find longest option name.
                 uint_fast64_t maxLength = getPrintLengthOfLongestOption();
                 for (auto const& moduleName : this->moduleNames) {
-                    printHelpForModule(moduleName, maxLength);
+                    // Only print for visible modules.
+                    if (hasModule(moduleName, true)) {
+                        printHelpForModule(moduleName, maxLength);
+                    };
                 }
             } else {
                 // Create a regular expression from the input hint.
@@ -192,12 +195,15 @@ namespace storm {
                 uint_fast64_t maxLengthModules = 0;
                 for (auto const& moduleName : this->moduleNames) {
                     if (std::regex_search(moduleName, hintRegex)) {
-                        matchingModuleNames.push_back(moduleName);
-                        maxLengthModules = std::max(maxLengthModules, getPrintLengthOfLongestOption(moduleName));
-                        
-                        // Add all options of this module to the list of printed options so we don't print them twice.
-                        auto optionIterator = this->moduleOptions.find(moduleName);
-                        printedOptions.insert(optionIterator->second.begin(), optionIterator->second.end());
+                        if (hasModule(moduleName, true)) {
+                            // Only consider visible modules.
+                            matchingModuleNames.push_back(moduleName);
+                            maxLengthModules = std::max(maxLengthModules, getPrintLengthOfLongestOption(moduleName));
+                            
+                            // Add all options of this module to the list of printed options so we don't print them twice.
+                            auto optionIterator = this->moduleOptions.find(moduleName);
+                            printedOptions.insert(optionIterator->second.begin(), optionIterator->second.end());
+                        }
                     }
                 }
 
@@ -243,7 +249,10 @@ namespace storm {
         
         void SettingsManager::printHelpForModule(std::string const& moduleName, uint_fast64_t maxLength) const {
             auto moduleIterator = moduleOptions.find(moduleName);
-            STORM_LOG_THROW(moduleIterator != moduleOptions.end(), storm::exceptions::IllegalFunctionCallException, "Cannot print help for unknown module '" << moduleName << "'.");
+            if(moduleIterator == this->moduleOptions.end()) {
+                return;
+            }
+            //STORM_LOG_THROW(moduleIterator != moduleOptions.end(), storm::exceptions::IllegalFunctionCallException, "Cannot print help for unknown module '" << moduleName << "'.");
             STORM_PRINT("##### Module '" << moduleName << "' " << std::string(std::min(maxLength, maxLength - moduleName.length() - 16), '#') << std::endl);
             
             // Save the flags for std::cout so we can manipulate them and be sure they will be restored as soon as this
@@ -282,8 +291,8 @@ namespace storm {
             std::unique_ptr<modules::ModuleSettings> const& settings = iterator->second;
 
             if (doRegister) {
-                // Now register the options of the module.
                 this->moduleOptions.emplace(moduleName, std::vector<std::shared_ptr<Option>>());
+                // Now register the options of the module.
                 for (auto const& option : settings->getOptions()) {
                     this->addOption(option);
                 }
@@ -315,6 +324,14 @@ namespace storm {
                     addOptionToMap(option->getShortName(), option, this->shortNameToOptions);
                 }
                 addOptionToMap(option->getModuleName() + ":" + option->getShortName(), option, this->shortNameToOptions);
+            }
+        }
+
+        bool SettingsManager::hasModule(std::string const& moduleName, bool checkHidden) const {
+            if (checkHidden) {
+                return this->moduleOptions.find(moduleName) != this->moduleOptions.end();
+            } else {
+                return this->modules.find(moduleName) != this->modules.end();
             }
         }
         
@@ -513,8 +530,8 @@ namespace storm {
             storm::settings::addModule<storm::settings::modules::IOSettings>();
             storm::settings::addModule<storm::settings::modules::BuildSettings>();
             storm::settings::addModule<storm::settings::modules::CoreSettings>();
+            storm::settings::addModule<storm::settings::modules::ModelCheckerSettings>();
             storm::settings::addModule<storm::settings::modules::DebugSettings>();
-            storm::settings::addModule<storm::settings::modules::CounterexampleGeneratorSettings>();
             storm::settings::addModule<storm::settings::modules::CuddSettings>();
             storm::settings::addModule<storm::settings::modules::SylvanSettings>();
             storm::settings::addModule<storm::settings::modules::GmmxxEquationSolverSettings>();
@@ -526,14 +543,14 @@ namespace storm {
             storm::settings::addModule<storm::settings::modules::BisimulationSettings>();
             storm::settings::addModule<storm::settings::modules::GlpkSettings>();
             storm::settings::addModule<storm::settings::modules::GurobiSettings>();
-            storm::settings::addModule<storm::settings::modules::TopologicalValueIterationEquationSolverSettings>();
+            storm::settings::addModule<storm::settings::modules::TopologicalEquationSolverSettings>();
             storm::settings::addModule<storm::settings::modules::Smt2SmtSolverSettings>();
             storm::settings::addModule<storm::settings::modules::ExplorationSettings>();
             storm::settings::addModule<storm::settings::modules::ResourceSettings>();
             storm::settings::addModule<storm::settings::modules::AbstractionSettings>();
-            storm::settings::addModule<storm::settings::modules::JaniExportSettings>();
             storm::settings::addModule<storm::settings::modules::JitBuilderSettings>();
             storm::settings::addModule<storm::settings::modules::MultiObjectiveSettings>();
+            storm::settings::addModule<storm::settings::modules::MultiplierSettings>();
         }
 
     }
