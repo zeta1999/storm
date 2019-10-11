@@ -1,6 +1,8 @@
 #ifndef STORM_SETTINGS_MODULES_IOSETTINGS_H_
 #define STORM_SETTINGS_MODULES_IOSETTINGS_H_
 
+#include <boost/optional.hpp>
+
 #include "storm-config.h"
 #include "storm/settings/modules/ModuleSettings.h"
 
@@ -57,12 +59,26 @@ namespace storm {
                 bool isExportExplicitSet() const;
                 
                 /*!
-                 * Retrieves thename in which to write the model in explicit format, if the option was set.
+                 * Retrieves the name in which to write the model in explicit format, if the option was set.
                  *
-                 * @return The name of the file in which to write the exported mode.
+                 * @return The name of the file in which to write the exported model.
                  */
                 std::string getExportExplicitFilename() const;
-                
+
+                /*!
+                 * Retrieves whether the export-to-dd option was set
+                 *
+                 * @return True if the export-to-explicit option was set
+                 */
+                bool isExportDdSet() const;
+
+                /*!
+                 * Retrieves the name in which to write the model in dd format, if the option was set.
+                 *
+                 * @return The name of the file in which to write the exported model.
+                 */
+                std::string getExportDdFilename() const;
+
                 /*!
                  * Retrieves whether the cumulative density function for reward bounded properties should be exported
                  */
@@ -72,6 +88,16 @@ namespace storm {
                  * Retrieves a path to a directory in which the cdf files will be stored
                  */
                  std::string getExportCdfDirectory() const;
+                
+                /*!
+                 * Retrieves whether an optimal scheduler is to be exported
+                 */
+                bool isExportSchedulerSet() const;
+                
+                /*!
+                 * Retrieves a filename to which an optimal scheduler will be exported.
+                 */
+                 std::string getExportSchedulerFilename() const;
                 
                 /*!
                  * Retrieves whether the explicit option was set.
@@ -270,6 +296,31 @@ namespace storm {
                  */
                 bool isToNondeterministicModelSet() const;
 
+                /*!
+                 * Retrieves whether the input model is to be read from the quantitative verification benchmark set (QVBS)
+                 */
+                bool isQvbsInputSet() const;
+                
+                /*!
+                 * Retrieves the specified model (short-)name of the QVBS
+                 */
+                std::string getQvbsModelName() const;
+                
+                /*!
+                 * Retrieves the selected model instance (file + open parameters of the model)
+                 */
+                uint64_t getQvbsInstanceIndex() const;
+                
+                /*!
+                 * Retrieves the selected property names
+                 */
+                boost::optional<std::vector<std::string>> getQvbsPropertyFilter() const;
+                
+                /*!
+                 * Retrieves the specified root directory of qvbs
+                 */
+                std::string getQvbsRoot() const;
+                
                 bool check() const override;
                 void finalize() override;
 
@@ -281,8 +332,10 @@ namespace storm {
                 static const std::string exportDotOptionName;
                 static const std::string exportJaniDotOptionName;
                 static const std::string exportExplicitOptionName;
+                static const std::string exportDdOptionName;
                 static const std::string exportCdfOptionName;
                 static const std::string exportCdfOptionShortName;
+                static const std::string exportSchedulerOptionName;
                 static const std::string explicitOptionName;
                 static const std::string explicitOptionShortName;
                 static const std::string explicitDrnOptionName;
@@ -302,6 +355,9 @@ namespace storm {
                 static const std::string propertyOptionName;
                 static const std::string propertyOptionShortName;
                 static const std::string toNondetOptionName;
+                static const std::string qvbsInputOptionName;
+                static const std::string qvbsInputOptionShortName;
+                static const std::string qvbsRootOptionName;
 
             };
 

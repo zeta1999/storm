@@ -7,6 +7,24 @@ The releases of major and minor versions contain an overview of changes since th
 Version 1.3.x
 -------------
 
+### Version 1.3.1 (under development)
+- Added support for multi-dimensional quantile queries
+- Allow to quickly check a benchmark from the [Quantitative Verification Benchmark Set](http://qcomp.org/benchmarks/) using the --qvbs option.
+- Added script resources/examples/download_qvbs.sh to download the QVBS.
+- If an option is unknown, Storm now suggests similar option names.
+- Flagged several options as 'advanced' to clean up the `--help`-message. Use `--help all` to display a complete list of options.
+- Support for the new `round` operator in the PRISM language
+- Support for parsing of exact time bounds for properties, e.g., `P=? [F=27 "goal"]`
+- Export of optimal schedulers when checking MDPs with the sparse engine (experimental). Use  `--exportscheduler <filename>` 
+- JANI: Allow bounded types for constants
+- JANI: Support for non-trivial reward accumulations.
+- JANI: Fixed support for reward expressions over non-transient variables.
+- DRN: Added support for exact parsing and action-based rewards
+- storm-conv can now apply transformations on a prism file
+- Fixed sparse bisimulation of MDPs (which failed if all non-absorbing states in the quotient are initial)
+- Fixed linking with Mathsat on macOS
+- Fixed compilation for macOS mojave
+- Support for export of MTBDDs from storm
 
 ### Version 1.3.0 (2018/12)
 - Slightly improved scheduler extraction

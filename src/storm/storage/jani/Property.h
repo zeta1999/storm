@@ -23,11 +23,11 @@ namespace storm {
             storm::expressions::Expression upperBound;
             bool upperBoundStrict = false;
             
-            bool hasLowerBound() {
+            bool hasLowerBound() const {
                 return lowerBound.isInitialized();
             }
             
-            bool hasUpperBound() {
+            bool hasUpperBound() const {
                 return upperBound.isInitialized();
             }
         };
@@ -51,6 +51,10 @@ namespace storm {
 
             storm::modelchecker::FilterType getFilterType() const {
                 return ft;
+            }
+            
+            bool isDefault() const {
+                return (ft == storm::modelchecker::FilterType::VALUES) && statesFormula && statesFormula->isInitialFormula();
             }
             
             FilterExpression substitute(std::map<storm::expressions::Variable, storm::expressions::Expression> const& substitution) const {
@@ -126,6 +130,8 @@ namespace storm {
             Property clone() const;
             
             FilterExpression const& getFilter() const;
+            
+            std::string asPrismSyntax() const;
             
             std::set<storm::expressions::Variable> const& getUndefinedConstants() const;
             bool containsUndefinedConstants() const;

@@ -52,7 +52,7 @@ namespace storm {
         
         template<>
         bool isNan(double const& value) {
-            return isnan(value);
+            return std::isnan(value);
         }
         
         bool isAlmostZero(double const& a) {
@@ -118,11 +118,6 @@ namespace storm {
         template<>
         double convertNumber(long long const& number){
             return static_cast<double>(number);
-        }
-
-        template<>
-        double convertNumber(std::string const& value){
-            return carl::toDouble(carl::parse<storm::RationalNumber>(value));
         }
 
         template<>
@@ -254,6 +249,12 @@ namespace storm {
         template<typename ValueType>
         ValueType ceil(ValueType const& number) {
             return std::ceil(number);
+        }
+        
+        template<typename ValueType>
+        ValueType round(ValueType const& number) {
+            // Rounding towards infinity
+            return floor<ValueType >(number + storm::utility::convertNumber<ValueType>(0.5));
         }
         
         template<typename ValueType>
@@ -389,7 +390,11 @@ namespace storm {
         
         template<>
         ClnRationalNumber convertNumber(std::string const& number) {
-            return carl::parse<ClnRationalNumber>(number);
+            ClnRationalNumber result;
+            if (carl::try_parse<ClnRationalNumber>(number, result)) {
+                return result;
+            }
+            STORM_LOG_THROW(false, storm::exceptions::InvalidArgumentException, "Unable to parse '" << number << "' as a rational number.");
         }
         
         template<>
@@ -582,7 +587,11 @@ namespace storm {
         
         template<>
         GmpRationalNumber convertNumber(std::string const& number) {
-            return carl::parse<GmpRationalNumber>(number);
+            GmpRationalNumber result;
+            if (carl::try_parse<GmpRationalNumber>(number, result)) {
+                return result;
+            }
+            STORM_LOG_THROW(false, storm::exceptions::InvalidArgumentException, "Unable to parse '" << number << "' as a rational number.");
         }
         
         template<>
@@ -856,7 +865,11 @@ namespace storm {
         }
 
 #endif
-        
+      
+        template<>
+        double convertNumber(std::string const& value){
+            return convertNumber<double>(convertNumber<storm::RationalNumber>(value));
+        }
         
         // Explicit instantiations.
         
@@ -886,6 +899,7 @@ namespace storm {
         template double abs(double const& number);
         template double floor(double const& number);
         template double ceil(double const& number);
+        template double round(double const& number);
         template double log(double const& number);
         template double log10(double const& number);
         template typename NumberTraits<double>::IntegerType trunc(double const& number);
@@ -918,6 +932,7 @@ namespace storm {
         template float abs(float const& number);
         template float floor(float const& number);
         template float ceil(float const& number);
+        template float round(float const& number);
         template float log(float const& number);
         template std::string to_string(float const& value);
 
@@ -974,6 +989,7 @@ namespace storm {
         template storm::ClnRationalNumber maximum(std::vector<storm::ClnRationalNumber> const&);
         template storm::ClnRationalNumber max(storm::ClnRationalNumber const& first, storm::ClnRationalNumber const& second);
         template storm::ClnRationalNumber min(storm::ClnRationalNumber const& first, storm::ClnRationalNumber const& second);
+        template storm::ClnRationalNumber round(storm::ClnRationalNumber const& number);
         template std::string to_string(storm::ClnRationalNumber const& value);
 #endif
 
@@ -998,6 +1014,7 @@ namespace storm {
         template storm::GmpRationalNumber maximum(std::vector<storm::GmpRationalNumber> const&);
         template storm::GmpRationalNumber max(storm::GmpRationalNumber const& first, storm::GmpRationalNumber const& second);
         template storm::GmpRationalNumber min(storm::GmpRationalNumber const& first, storm::GmpRationalNumber const& second);
+        template storm::GmpRationalNumber round(storm::GmpRationalNumber const& number);
         template std::string to_string(storm::GmpRationalNumber const& value);
 #endif
 

@@ -1,12 +1,5 @@
 #include <boost/functional/hash.hpp>
 
-// To detect whether the usage of TBB is possible, this include is neccessary
-#include "storm-config.h"
-
-#ifdef STORM_HAVE_INTELTBB
-#include "tbb/tbb.h"
-#endif
-
 #include "storm/storage/sparse/StateType.h"
 #include "storm/storage/SparseMatrix.h"
 #include "storm/adapters/RationalFunctionAdapter.h"
@@ -598,7 +591,7 @@ namespace storm {
             // If there is no current row grouping, we need to create it.
             if (!this->rowGroupIndices) {
                 STORM_LOG_ASSERT(trivialRowGrouping, "Only trivial row-groupings can be constructed on-the-fly.");
-                this->rowGroupIndices = storm::utility::vector::buildVectorForRange(0, this->getRowGroupCount() + 1);
+                this->rowGroupIndices = storm::utility::vector::buildVectorForRange(static_cast<index_type>(0), this->getRowGroupCount() + 1);
             }
             return rowGroupIndices.get();
         }
@@ -627,7 +620,7 @@ namespace storm {
         template<typename ValueType>
         void SparseMatrix<ValueType>::makeRowGroupingTrivial() {
             if (trivialRowGrouping) {
-                STORM_LOG_ASSERT(!rowGroupIndices || rowGroupIndices.get() == storm::utility::vector::buildVectorForRange(0, this->getRowGroupCount() + 1), "Row grouping is supposed to be trivial but actually it is not.");
+                STORM_LOG_ASSERT(!rowGroupIndices || rowGroupIndices.get() == storm::utility::vector::buildVectorForRange(static_cast<index_type>(0), this->getRowGroupCount() + 1), "Row grouping is supposed to be trivial but actually it is not.");
             } else {
                 trivialRowGrouping = true;
                 rowGroupIndices = boost::none;
@@ -697,17 +690,30 @@ namespace storm {
             // If the row has no elements in it, we cannot make it absorbing, because we would need to move all elements
             // in the vector of nonzeros otherwise.
             if (columnValuePtr >= columnValuePtrEnd) {
-                throw storm::exceptions::InvalidStateException() << "Illegal call to SparseMatrix::makeRowDirac: cannot make row " << row << " absorbing, but there is no entry in this row.";
+                throw storm::exceptions::InvalidStateException() << "Illegal call to SparseMatrix::makeRowDirac: cannot make row " << row << " absorbing, because there is no entry in this row.";
             }
+            iterator lastColumnValuePtr = this->end(row) - 1;
             
-            // If there is at least one entry in this row, we can just set it to one, modify its column value to the
+            // If there is at least one entry in this row, we can set it to one, modify its column value to the
             // one given by the parameter and set all subsequent elements of this row to zero.
-            columnValuePtr->setColumn(column);
-            columnValuePtr->setValue(storm::utility::one<ValueType>());
-            ++columnValuePtr;
-            for (; columnValuePtr != columnValuePtrEnd; ++columnValuePtr) {
+            // However, we want to preserve that column indices within a row are ascending, so we pick an entry that is close to the desired column index
+            while (columnValuePtr->getColumn() < column && columnValuePtr != lastColumnValuePtr) {
+                if (!storm::utility::isZero(columnValuePtr->getValue())) {
+                    --this->nonzeroEntryCount;
+                }
+                columnValuePtr->setValue(storm::utility::zero<ValueType>());
+                ++columnValuePtr;
+            }
+            // At this point, we have found the first entry whose column is >= the desired column (or the last entry of the row, if no such column exist)
+            if (storm::utility::isZero(columnValuePtr->getValue()))  {
                 ++this->nonzeroEntryCount;
-                columnValuePtr->setColumn(0);
+            }
+            columnValuePtr->setValue(storm::utility::one<ValueType>());
+            columnValuePtr->setColumn(column);
+            for (++columnValuePtr; columnValuePtr != columnValuePtrEnd; ++columnValuePtr) {
+                if (!storm::utility::isZero(columnValuePtr->getValue())) {
+                    --this->nonzeroEntryCount;
+                }
                 columnValuePtr->setValue(storm::utility::zero<ValueType>());
             }
         }
@@ -1065,6 +1071,27 @@ namespace storm {
                 result.setRowGroupIndices(getRowGroupIndices());
             }
             return result;
+        }
+        
+        template<typename ValueType>
+        void SparseMatrix<ValueType>::dropZeroEntries() {
+            updateNonzeroEntryCount();
+            if (getNonzeroEntryCount() != getEntryCount()) {
+                SparseMatrixBuilder<ValueType> builder(getRowCount(), getColumnCount(), getNonzeroEntryCount(), true);
+                for (index_type row = 0; row < getRowCount(); ++row) {
+                    for (auto const& entry : getRow(row)) {
+                        if (!storm::utility::isZero(entry.getValue())) {
+                            builder.addNextValue(row, entry.getColumn(), entry.getValue());
+                        }
+                    }
+                }
+                SparseMatrix<ValueType> result = builder.build();
+                // Add a row grouping if necessary.
+                if (!hasTrivialRowGrouping()) {
+                    result.setRowGroupIndices(getRowGroupIndices());
+                }
+                *this = std::move(result);
+            }
         }
         
         template<typename ValueType>
@@ -2150,6 +2177,17 @@ namespace storm {
             return true;
         }
 
+        template<typename ValueType>
+        std::string SparseMatrix<ValueType>::getDimensionsAsString() const {
+            std::string result = std::to_string(getRowCount()) + "x" + std::to_string(getColumnCount()) + " matrix (" + std::to_string(getNonzeroEntryCount()) + " non-zeroes";
+            if (!hasTrivialRowGrouping()) {
+                result += ", " + std::to_string(getRowGroupCount()) + " groups";
+            }
+            result += ")";
+            return result;
+        }
+
+        
         template<typename ValueType>
         std::ostream& operator<<(std::ostream& out, SparseMatrix<ValueType> const& matrix) {
             // Print column numbers in header.

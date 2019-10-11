@@ -8,6 +8,8 @@
 #include "storm-dft/storage/dft/DFTElements.h"
 #include "storm-dft/storage/dft/elements/DFTRestriction.h"
 #include "storm-dft/storage/dft/DFTLayoutInfo.h"
+#include "storm/exceptions/NotSupportedException.h"
+
 
 namespace storm {
     namespace storage {
@@ -41,7 +43,8 @@ namespace storm {
             std::unordered_map<std::string, storm::storage::DFTLayoutInfo> mLayoutInfo;
             
         public:
-            DFTBuilder(bool defaultInclusive = true, bool binaryDependencies = true) : pandDefaultInclusive(defaultInclusive), porDefaultInclusive(defaultInclusive), binaryDependencies(binaryDependencies) {
+            DFTBuilder(bool defaultInclusive = true) : pandDefaultInclusive(defaultInclusive),
+                                                       porDefaultInclusive(defaultInclusive) {
                 
             }
             
@@ -93,8 +96,8 @@ namespace storm {
                 if(children.size() <= 1) {
                     STORM_LOG_ERROR("Dependencies require at least two children");
                 }
-                if(mElements.count(name) != 0) {
-                    // Element with that name already exists.
+                if (nameInUse(name)) {
+                    STORM_LOG_ERROR("Element with name '" << name << "' already exists.");
                     return false;
                 }
 
@@ -104,50 +107,20 @@ namespace storm {
                 }
                 std::string trigger = children[0];
 
-                //TODO Matthias: collect constraints for SMT solving
-                //0 <= probability <= 1
-                if (binaryDependencies && !storm::utility::isOne(probability) && children.size() > 2) {
-                    // Introduce additional element for first capturing the probabilistic dependency
-                    std::string nameAdditional = name + "_additional";
-                    addBasicElement(nameAdditional, storm::utility::zero<ValueType>(), storm::utility::zero<ValueType>(), false);
-                    // First consider probabilistic dependency
-                    addDepElement(name + "_pdep", {children.front(), nameAdditional}, probability);
-                    // Then consider dependencies to the children if probabilistic dependency failed
-                    std::vector<std::string> newChildren = children;
-                    newChildren[0] = nameAdditional;
-                    addDepElement(name, newChildren, storm::utility::one<ValueType>());
-                    return true;
-                } else {
-                    // Add dependencies
-                    if(binaryDependencies) {
-                        for (size_t i = 1; i < children.size(); ++i) {
-                            std::string nameDep = name + "_" + std::to_string(i);
-                            if (mElements.count(nameDep) != 0) {
-                                // Element with that name already exists.
-                                STORM_LOG_ERROR("Element with name: " << nameDep << " already exists.");
-                                return false;
-                            }
-                            STORM_LOG_ASSERT(storm::utility::isOne(probability) || children.size() == 2,
-                                             "PDep with multiple children supported.");
-                            DFTDependencyPointer element = std::make_shared<storm::storage::DFTDependency<ValueType>>(mNextId++, nameDep, probability);
-                            mElements[element->name()] = element;
-                            mDependencyChildNames[element] = {trigger, children[i]};
-                            mDependencies.push_back(element);
-                        }
-                    } else {
-                        DFTDependencyPointer element = std::make_shared<storm::storage::DFTDependency<ValueType>>(mNextId++, name, probability);
-                        mElements[element->name()] = element;
-                        mDependencyChildNames[element] = children;
-                        mDependencies.push_back(element);
-                    }
-                    return true;
-                }
+                //TODO: collect constraints for SMT solving
+                DFTDependencyPointer element = std::make_shared<storm::storage::DFTDependency<ValueType>>(mNextId++,
+                                                                                                          name,
+                                                                                                          probability);
+                mElements[element->name()] = element;
+                mDependencyChildNames[element] = children;
+                mDependencies.push_back(element);
+                return true;
             }
 
             bool addVotElement(std::string const& name, unsigned threshold, std::vector<std::string> const& children) {
                 STORM_LOG_ASSERT(children.size() > 0, "Has no child.");
-                if(mElements.count(name) != 0) {
-                    STORM_LOG_ERROR("Element with name: " << name << " already exists.");
+                if (nameInUse(name)) {
+                    STORM_LOG_ERROR("Element with name '" << name << "' already exists.");
                     return false;
                 }
                 // It is an and-gate
@@ -169,24 +142,65 @@ namespace storm {
                 mChildNames[element] = children;
                 return true;
             }
-            
-            bool addBasicElement(std::string const& name, ValueType failureRate, ValueType dormancyFactor, bool transient = false) {
-                //TODO Matthias: collect constraints for SMT solving
-                //failureRate > 0
+
+            bool addBasicElementConst(std::string const& name, bool failed) {
+                if (nameInUse(name)) {
+                    STORM_LOG_ERROR("Element with name '" << name << "' already exists.");
+                    return false;
+                }
+                mElements[name] = std::make_shared<storm::storage::BEConst<ValueType>>(mNextId++, name, failed);
+                return true;
+            }
+
+            bool addBasicElementProbability(std::string const& name, ValueType probability, ValueType dormancyFactor, bool transient = false) {
                 //0 <= dormancyFactor <= 1
-                STORM_LOG_ASSERT(mElements.find(name) == mElements.end(), "Element '" << name << "' already exists.");
-                mElements[name] = std::make_shared<storm::storage::DFTBE<ValueType>>(mNextId++, name, failureRate, dormancyFactor, transient);
+                if (nameInUse(name)) {
+                    STORM_LOG_ERROR("Element with name '" << name << "' already exists.");
+                    return false;
+                }
+                if (storm::utility::isZero<ValueType>(probability)) {
+                    return addBasicElementConst(name, false);
+                } else if (storm::utility::isOne<ValueType>(probability)) {
+                    return addBasicElementConst(name, true);
+                }
+                STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Constant probability distribution is not supported for basic element '" << name << "'.");
+                return false;
+            }
+
+            bool addBasicElementExponential(std::string const& name, ValueType failureRate, ValueType dormancyFactor, bool transient = false) {
+                //TODO: collect constraints for SMT solving
+                //0 <= dormancyFactor <= 1
+                if (nameInUse(name)) {
+                    STORM_LOG_ERROR("Element with name '" << name << "' already exists.");
+                    return false;
+                }
+                if (storm::utility::isZero<ValueType>(failureRate)) {
+                    return addBasicElementConst(name, false);
+                }
+
+                mElements[name] = std::make_shared<storm::storage::BEExponential<ValueType>>(mNextId++, name, failureRate, dormancyFactor, transient);
                 return true;
             }
 
             void addLayoutInfo(std::string const& name, double x, double y) {
-                STORM_LOG_ASSERT(mElements.count(name) > 0, "Element '" << name << "' not found.");
+                if (!nameInUse(name)) {
+                    STORM_LOG_ERROR("Element with name '" << name << "' not found.");
+                }
                 mLayoutInfo[name] = storm::storage::DFTLayoutInfo(x, y);
             }
             
             bool setTopLevel(std::string const& tle) {
                 mTopLevelIdentifier = tle;
-                return mElements.count(tle) > 0;
+                return nameInUse(tle);
+            }
+
+            /**
+             * Check whether the name is already used.
+             * @param name Element name.
+             * @return True iff name is already in use.
+             */
+            bool nameInUse(std::string const& name) {
+                return mElements.find(name) != mElements.end();
             }
             
             std::string getUniqueName(std::string name);
@@ -222,13 +236,13 @@ namespace storm {
             void topoVisit(DFTElementPointer const& n, std::map<DFTElementPointer, topoSortColour, storm::storage::OrderElementsById<ValueType>>& visited, DFTElementVector& L);
 
             DFTElementVector topoSort();
+
+            std::vector<bool> computeHasDynamicBehavior(DFTElementVector elements);
             
             // If true, the standard gate adders make a pand inclusive, and exclusive otherwise.
             bool pandDefaultInclusive;
             // If true, the standard gate adders make a pand inclusive, and exclusive otherwise.
             bool porDefaultInclusive;
-
-            bool binaryDependencies;
             
         };
     }

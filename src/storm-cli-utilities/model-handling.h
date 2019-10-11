@@ -42,6 +42,8 @@
 #include "storm/settings/modules/AbstractionSettings.h"
 #include "storm/settings/modules/ResourceSettings.h"
 #include "storm/settings/modules/ModelCheckerSettings.h"
+#include "storm/settings/modules/TransformationSettings.h"
+#include "storm/storage/Qvbs.h"
 
 #include "storm/utility/Stopwatch.h"
 
@@ -114,6 +116,20 @@ namespace storm {
             return input;
         }
         
+        void ensureNoUndefinedPropertyConstants(std::vector<storm::jani::Property> const& properties) {
+            // Make sure there are no undefined constants remaining in any property.
+            for (auto const& property : properties) {
+                std::set<storm::expressions::Variable> usedUndefinedConstants = property.getUndefinedConstants();
+                if (!usedUndefinedConstants.empty()) {
+                    std::vector<std::string> undefinedConstantsNames;
+                    for (auto const& constant : usedUndefinedConstants) {
+                        undefinedConstantsNames.emplace_back(constant.getName());
+                    }
+                    STORM_LOG_THROW(false, storm::exceptions::InvalidArgumentException, "The property '" << property << " still refers to the undefined constants " << boost::algorithm::join(undefinedConstantsNames, ",") << ".");
+                }
+            }
+        }
+        
         SymbolicInput preprocessSymbolicInput(SymbolicInput const& input, storm::builder::BuilderType const& builderType) {
             auto ioSettings = storm::settings::getModule<storm::settings::modules::IOSettings>();
             
@@ -130,18 +146,7 @@ namespace storm {
                 output.properties = storm::api::substituteConstantsInProperties(output.properties, constantDefinitions);
             }
             
-            // Make sure there are no undefined constants remaining in any property.
-            for (auto const& property : output.properties) {
-                std::set<storm::expressions::Variable> usedUndefinedConstants = property.getUndefinedConstants();
-                if (!usedUndefinedConstants.empty()) {
-                    std::vector<std::string> undefinedConstantsNames;
-                    for (auto const& constant : usedUndefinedConstants) {
-                        undefinedConstantsNames.emplace_back(constant.getName());
-                    }
-
-                    STORM_LOG_THROW(false, storm::exceptions::InvalidArgumentException, "The property '" << property << " still refers to the undefined constants " << boost::algorithm::join(undefinedConstantsNames, ",") << ".");
-                }
-            }
+            ensureNoUndefinedPropertyConstants(output.properties);
             
             // Check whether conversion for PRISM to JANI is requested or necessary.
             if (input.model && input.model.get().isPrismProgram()) {
@@ -195,14 +200,48 @@ namespace storm {
             STORM_LOG_THROW(false, storm::exceptions::InvalidSettingsException, "Unable to determine the model builder type.");
         }
         
+        SymbolicInput parseAndPreprocessSymbolicInputQvbs(storm::settings::modules::IOSettings const& ioSettings, storm::builder::BuilderType const& builderType) {
+            // Parse the model input
+            SymbolicInput input;
+            storm::storage::QvbsBenchmark benchmark(ioSettings.getQvbsModelName());
+            STORM_PRINT_AND_LOG(benchmark.getInfo(ioSettings.getQvbsInstanceIndex(), ioSettings.getQvbsPropertyFilter()));
+            storm::utility::Stopwatch modelParsingWatch(true);
+            storm::jani::ModelFeatures supportedFeatures = storm::api::getSupportedJaniFeatures(builderType);
+            auto janiInput = storm::api::parseJaniModel(benchmark.getJaniFile(ioSettings.getQvbsInstanceIndex()), supportedFeatures, ioSettings.getQvbsPropertyFilter());
+            input.model = std::move(janiInput.first);
+            input.properties = std::move(janiInput.second);
+            modelParsingWatch.stop();
+            STORM_PRINT("Time for model input parsing: " << modelParsingWatch << "." << std::endl << std::endl);
+            
+            // Parse additional properties
+            boost::optional<std::set<std::string>> propertyFilter = storm::api::parsePropertyFilter(ioSettings.getPropertyFilter());
+            parseProperties(ioSettings, input, propertyFilter);
+            
+            // Substitute constant definitions
+            auto constantDefinitions = input.model.get().parseConstantDefinitions(benchmark.getConstantDefinition(ioSettings.getQvbsInstanceIndex()));
+            input.model = input.model.get().preprocess(constantDefinitions);
+            if (!input.properties.empty()) {
+                input.properties = storm::api::substituteConstantsInProperties(input.properties, constantDefinitions);
+            }
+            
+            ensureNoUndefinedPropertyConstants(input.properties);
+            return input;
+        }
+        
         SymbolicInput parseAndPreprocessSymbolicInput() {
             // Get the used builder type to handle cases where preprocessing depends on it
             auto buildSettings = storm::settings::getModule<storm::settings::modules::BuildSettings>();
             auto coreSettings = storm::settings::getModule<storm::settings::modules::CoreSettings>();
+            auto ioSettings = storm::settings::getModule<storm::settings::modules::IOSettings>();
             auto builderType = getBuilderType(coreSettings.getEngine(), buildSettings.isJitSet());
             
-            SymbolicInput input = parseSymbolicInput(builderType);
-            input = preprocessSymbolicInput(input, builderType);
+            SymbolicInput input;
+            if (ioSettings.isQvbsInputSet()) {
+                input = parseAndPreprocessSymbolicInputQvbs(ioSettings, builderType);
+            } else {
+                input = parseSymbolicInput(builderType);
+                input = preprocessSymbolicInput(input, builderType);
+            }
             exportSymbolicInput(input);
             return input;
         }
@@ -312,11 +351,18 @@ namespace storm {
             auto generalSettings = storm::settings::getModule<storm::settings::modules::GeneralSettings>();
             auto bisimulationSettings = storm::settings::getModule<storm::settings::modules::BisimulationSettings>();
             auto ioSettings = storm::settings::getModule<storm::settings::modules::IOSettings>();
+            auto transformationSettings = storm::settings::getModule<storm::settings::modules::TransformationSettings>();
             
             std::pair<std::shared_ptr<storm::models::sparse::Model<ValueType>>, bool> result = std::make_pair(model, false);
             
             if (result.first->isOfType(storm::models::ModelType::MarkovAutomaton)) {
                 result.first = preprocessSparseMarkovAutomaton(result.first->template as<storm::models::sparse::MarkovAutomaton<ValueType>>());
+                if (transformationSettings.isChainEliminationSet() &&
+                    result.first->isOfType(storm::models::ModelType::MarkovAutomaton)) {
+                    result.first = storm::transformer::NonMarkovianChainTransformer<ValueType>::eliminateNonmarkovianStates(
+                            result.first->template as<storm::models::sparse::MarkovAutomaton<ValueType>>(),
+                            !transformationSettings.isIgnoreLabelingSet());
+                }
                 result.second = true;
             }
             
@@ -348,7 +394,15 @@ namespace storm {
         
         template <storm::dd::DdType DdType, typename ValueType>
         void exportDdModel(std::shared_ptr<storm::models::symbolic::Model<DdType, ValueType>> const& model, SymbolicInput const& input) {
-            // Intentionally left empty.
+            auto ioSettings = storm::settings::getModule<storm::settings::modules::IOSettings>();
+
+            if (ioSettings.isExportDdSet()) {
+                storm::api::exportSparseModelAsDrdd(model, ioSettings.getExportDdFilename());
+            }
+
+            if (ioSettings.isExportDotSet()) {
+                storm::api::exportSymbolicModelAsDot(model, ioSettings.getExportDotFilename());
+            }
         }
         
         template <storm::dd::DdType DdType, typename ValueType>
@@ -579,7 +633,7 @@ namespace storm {
                     STORM_PRINT("Time for model checking: " << *watch << "." << std::endl);
                 }
             } else {
-                STORM_PRINT(" failed, property is unsupported by selected engine/settings." << std::endl);
+                STORM_LOG_ERROR("Property is unsupported by selected engine/settings." << std::endl);
             }
         }
         
@@ -591,14 +645,31 @@ namespace storm {
         
         template<typename ValueType>
         void verifyProperties(SymbolicInput const& input, std::function<std::unique_ptr<storm::modelchecker::CheckResult>(std::shared_ptr<storm::logic::Formula const> const& formula, std::shared_ptr<storm::logic::Formula const> const& states)> const& verificationCallback, std::function<void(std::unique_ptr<storm::modelchecker::CheckResult> const&)> const& postprocessingCallback = PostprocessingIdentity()) {
+            auto transformationSettings = storm::settings::getModule<storm::settings::modules::TransformationSettings>();
             auto const& properties = input.preprocessedProperties ? input.preprocessedProperties.get() : input.properties;
             for (auto const& property : properties) {
                 printModelCheckingProperty(property);
+                bool ignored = false;
                 storm::utility::Stopwatch watch(true);
-                std::unique_ptr<storm::modelchecker::CheckResult> result = verificationCallback(property.getRawFormula(), property.getFilter().getStatesFormula());
+                std::unique_ptr<storm::modelchecker::CheckResult> result;
+                try {
+                    auto rawFormula = property.getRawFormula();
+                    if (transformationSettings.isChainEliminationSet() &&
+                        !storm::transformer::NonMarkovianChainTransformer<ValueType>::preservesFormula(*rawFormula)) {
+                        STORM_LOG_WARN("Property is not preserved by elimination of non-markovian states.");
+                        ignored = true;
+                    } else {
+                        result = verificationCallback(property.getRawFormula(),
+                                                      property.getFilter().getStatesFormula());
+                    }
+                } catch (storm::exceptions::BaseException const& ex) {
+                    STORM_LOG_WARN("Cannot handle property: " << ex.what());
+                }
                 watch.stop();
-                postprocessingCallback(result);
-                printResult<ValueType>(result, property, &watch);
+                if (!ignored) {
+                    postprocessingCallback(result);
+                    printResult<ValueType>(result, property, &watch);
+                }
             }
         }
         
@@ -697,10 +768,14 @@ namespace storm {
         template <typename ValueType>
         void verifyWithSparseEngine(std::shared_ptr<storm::models::ModelBase> const& model, SymbolicInput const& input) {
             auto sparseModel = model->as<storm::models::sparse::Model<ValueType>>();
+            auto const& ioSettings = storm::settings::getModule<storm::settings::modules::IOSettings>();
             verifyProperties<ValueType>(input,
-                                        [&sparseModel] (std::shared_ptr<storm::logic::Formula const> const& formula, std::shared_ptr<storm::logic::Formula const> const& states) {
+                                        [&sparseModel,&ioSettings] (std::shared_ptr<storm::logic::Formula const> const& formula, std::shared_ptr<storm::logic::Formula const> const& states) {
                                             bool filterForInitialStates = states->isInitialFormula();
                                             auto task = storm::api::createTask<ValueType>(formula, filterForInitialStates);
+                                            if (ioSettings.isExportSchedulerSet()) {
+                                                task.setProduceSchedulers(true);
+                                            }
                                             std::unique_ptr<storm::modelchecker::CheckResult> result = storm::api::verifyWithSparseEngine<ValueType>(sparseModel, task);
                                             
                                             std::unique_ptr<storm::modelchecker::CheckResult> filter;
@@ -713,6 +788,17 @@ namespace storm {
                                                 result->filter(filter->asQualitativeCheckResult());
                                             }
                                             return result;
+                                        },
+                                        [&sparseModel,&ioSettings] (std::unique_ptr<storm::modelchecker::CheckResult> const& result) {
+                                            if (ioSettings.isExportSchedulerSet()) {
+                                                if (result->template asExplicitQuantitativeCheckResult<ValueType>().hasScheduler()) {
+                                                    auto const& scheduler = result->template asExplicitQuantitativeCheckResult<ValueType>().getScheduler();
+                                                    STORM_PRINT_AND_LOG("Exporting scheduler ... ")
+                                                    storm::api::exportScheduler(sparseModel, scheduler, ioSettings.getExportSchedulerFilename());
+                                                } else {
+                                                    STORM_LOG_ERROR("Scheduler requested but could not be generated.");
+                                                }
+                                            }
                                         });
         }
         

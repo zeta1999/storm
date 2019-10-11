@@ -81,75 +81,6 @@ namespace storm {
                 return result;
             }
             
-            template<typename ValueType>
-            std::vector<ValueType> analyzeTrivialDtmcEpochModel(typename rewardbounded::MultiDimensionalRewardUnfolding<ValueType, true>::EpochModel& epochModel) {
-                
-                std::vector<ValueType> epochResult;
-                epochResult.reserve(epochModel.epochInStates.getNumberOfSetBits());
-                auto stepSolutionIt = epochModel.stepSolutions.begin();
-                auto stepChoiceIt = epochModel.stepChoices.begin();
-                for (auto const& state : epochModel.epochInStates) {
-                    while (*stepChoiceIt < state) {
-                        ++stepChoiceIt;
-                        ++stepSolutionIt;
-                    }
-                    if (epochModel.objectiveRewardFilter.front().get(state)) {
-                        if (*stepChoiceIt == state) {
-                            epochResult.push_back(epochModel.objectiveRewards.front()[state] + *stepSolutionIt);
-                        } else {
-                            epochResult.push_back(epochModel.objectiveRewards.front()[state]);
-                        }
-                    } else {
-                        if (*stepChoiceIt == state) {
-                            epochResult.push_back(*stepSolutionIt);
-                        } else {
-                            epochResult.push_back(storm::utility::zero<ValueType>());
-                        }
-                    }
-                }
-                return epochResult;
-            }
-            
-            template<typename ValueType>
-            std::vector<ValueType> analyzeNonTrivialDtmcEpochModel(Environment const& env, typename rewardbounded::MultiDimensionalRewardUnfolding<ValueType, true>::EpochModel& epochModel, std::vector<ValueType>& x, std::vector<ValueType>& b, std::unique_ptr<storm::solver::LinearEquationSolver<ValueType>>& linEqSolver, boost::optional<ValueType> const& lowerBound, boost::optional<ValueType> const& upperBound) {
- 
-                // Update some data for the case that the Matrix has changed
-                if (epochModel.epochMatrixChanged) {
-                    x.assign(epochModel.epochMatrix.getRowGroupCount(), storm::utility::zero<ValueType>());
-                    storm::solver::GeneralLinearEquationSolverFactory<ValueType> linearEquationSolverFactory;
-                    linEqSolver = linearEquationSolverFactory.create(env, epochModel.epochMatrix);
-                    linEqSolver->setCachingEnabled(true);
-                    auto req = linEqSolver->getRequirements(env);
-                    if (lowerBound) {
-                        linEqSolver->setLowerBound(lowerBound.get());
-                        req.clearLowerBounds();
-                    }
-                    if (upperBound) {
-                        linEqSolver->setUpperBound(upperBound.get());
-                        req.clearUpperBounds();
-                    }
-                    STORM_LOG_THROW(!req.hasEnabledCriticalRequirement(), storm::exceptions::UncheckedRequirementException, "Solver requirements " + req.getEnabledRequirementsAsString() + " not checked.");
-                }
-                
-                // Prepare the right hand side of the equation system
-                b.assign(epochModel.epochMatrix.getRowCount(), storm::utility::zero<ValueType>());
-                std::vector<ValueType> const& objectiveValues = epochModel.objectiveRewards.front();
-                for (auto const& choice : epochModel.objectiveRewardFilter.front()) {
-                    b[choice] = objectiveValues[choice];
-                }
-                auto stepSolutionIt = epochModel.stepSolutions.begin();
-                for (auto const& choice : epochModel.stepChoices) {
-                    b[choice] += *stepSolutionIt;
-                    ++stepSolutionIt;
-                }
-                assert(stepSolutionIt == epochModel.stepSolutions.end());
-                
-                // Solve the minMax equation system
-                linEqSolver->solveEquations(env, x, b);
-                
-                return storm::utility::vector::filterVector(x, epochModel.epochInStates);
-            }
-            
             template<>
             std::map<storm::storage::sparse::state_type, storm::RationalFunction> SparseDtmcPrctlHelper<storm::RationalFunction>::computeRewardBoundedValues(Environment const& env, storm::models::sparse::Dtmc<storm::RationalFunction> const& model, std::shared_ptr<storm::logic::OperatorFormula const> rewardBoundedFormula) {
                 STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "The specified property is not supported by this value type.");
@@ -184,8 +115,7 @@ namespace storm {
                 // Set the correct equation problem format.
                 storm::solver::GeneralLinearEquationSolverFactory<ValueType> linearEquationSolverFactory;
                 rewardUnfolding.setEquationSystemFormatForEpochModel(linearEquationSolverFactory.getEquationProblemFormat(preciseEnv));
-                bool convertToEquationSystem = linearEquationSolverFactory.getEquationProblemFormat(preciseEnv) == solver::LinearEquationSolverProblemFormat::EquationSystem;
-                
+
                 storm::utility::ProgressMeasurement progress("epochs");
                 progress.setMaxCount(epochOrder.size());
                 progress.startNewMeasurement(0);
@@ -194,17 +124,12 @@ namespace storm {
                     swBuild.start();
                     auto& epochModel = rewardUnfolding.setCurrentEpoch(epoch);
                     swBuild.stop(); swCheck.start();
-                    // If the epoch matrix is empty we do not need to solve a linear equation system
-                    if ((convertToEquationSystem && epochModel.epochMatrix.isIdentityMatrix()) || (!convertToEquationSystem && epochModel.epochMatrix.getEntryCount() == 0)) {
-                        rewardUnfolding.setSolutionForCurrentEpoch(analyzeTrivialDtmcEpochModel<ValueType>(epochModel));
-                    } else {
-                        rewardUnfolding.setSolutionForCurrentEpoch(analyzeNonTrivialDtmcEpochModel<ValueType>(preciseEnv, epochModel, x, b, linEqSolver, lowerBound, upperBound));
-                    }
+                    rewardUnfolding.setSolutionForCurrentEpoch(epochModel.analyzeSingleObjective(preciseEnv, x, b, linEqSolver, lowerBound, upperBound));
                     swCheck.stop();
                     if (storm::settings::getModule<storm::settings::modules::IOSettings>().isExportCdfSet() && !rewardUnfolding.getEpochManager().hasBottomDimension(epoch)) {
                         std::vector<ValueType> cdfEntry;
                         for (uint64_t i = 0; i < rewardUnfolding.getEpochManager().getDimensionCount(); ++i) {
-                            uint64_t offset = rewardUnfolding.getDimension(i).isUpperBounded ? 0 : 1;
+                            uint64_t offset = rewardUnfolding.getDimension(i).boundType == helper::rewardbounded::DimensionBoundType::LowerBound ? 1 : 0;
                             cdfEntry.push_back(storm::utility::convertNumber<ValueType>(rewardUnfolding.getEpochManager().getDimensionOfEpoch(epoch, i) + offset) * rewardUnfolding.getDimension(i).scalingFactor);
                         }
                         cdfEntry.push_back(rewardUnfolding.getInitialStateResult(epoch));
@@ -250,7 +175,7 @@ namespace storm {
                 std::vector<ValueType> result(transitionMatrix.getRowCount(), storm::utility::zero<ValueType>());
                 
                 // We need to identify the maybe states (states which have a probability for satisfying the until formula
-                // that is strictly between 0 and 1) and the states that satisfy the formula with probablity 1.
+                // that is strictly between 0 and 1) and the states that satisfy the formula with probability 1.
                 storm::storage::BitVector maybeStates, statesWithProbability1;
                 
                 if (hint.isExplicitModelCheckerHint() && hint.template asExplicitModelCheckerHint<ValueType>().getComputeOnlyMaybeStates()) {
@@ -290,7 +215,7 @@ namespace storm {
                     storm::utility::vector::setVectorValues<ValueType>(result, maybeStates, storm::utility::convertNumber<ValueType>(0.5));
                 } else {
                     if (!maybeStates.empty()) {
-                        // In this case we have have to compute the probabilities.
+                        // In this case we have to compute the probabilities.
                         
                         // Check whether we need to convert the input to equation system format.
                         storm::solver::GeneralLinearEquationSolverFactory<ValueType> linearEquationSolverFactory;
@@ -330,7 +255,67 @@ namespace storm {
                 }
                 return result;
             }
-            
+
+            template<typename ValueType, typename RewardModelType>
+            std::vector<ValueType> SparseDtmcPrctlHelper<ValueType, RewardModelType>::computeAllUntilProbabilities(Environment const& env, storm::solver::SolveGoal<ValueType>&& goal, storm::storage::SparseMatrix<ValueType> const& transitionMatrix, storm::storage::BitVector const& initialStates, storm::storage::BitVector const& phiStates, storm::storage::BitVector const& psiStates) {
+
+                uint_fast64_t numberOfStates = transitionMatrix.getRowCount();
+                std::vector<ValueType> result(numberOfStates, storm::utility::zero<ValueType>());
+
+                // All states are relevant
+                storm::storage::BitVector relevantStates(numberOfStates, true);
+
+                // Compute exact probabilities for some states.
+                if (!relevantStates.empty()) {
+                    // Check whether we need to convert the input to equation system format.
+                    storm::solver::GeneralLinearEquationSolverFactory<ValueType> linearEquationSolverFactory;
+                    bool convertToEquationSystem = linearEquationSolverFactory.getEquationProblemFormat(env) == storm::solver::LinearEquationSolverProblemFormat::EquationSystem;
+
+                    storm::storage::SparseMatrix<ValueType> submatrix(transitionMatrix);
+                    submatrix.makeRowsAbsorbing(phiStates);
+                    submatrix.makeRowsAbsorbing(psiStates);
+                    //submatrix.deleteDiagonalEntries(psiStates);
+                    //storm::storage::BitVector failState(numberOfStates, false);
+                    //failState.set(0, true);
+                    submatrix.deleteDiagonalEntries();
+                    submatrix = submatrix.transpose();
+                    submatrix = submatrix.getSubmatrix(true, relevantStates, relevantStates, convertToEquationSystem);
+
+                    if (convertToEquationSystem) {
+                        // Converting the matrix from the fixpoint notation to the form needed for the equation
+                        // system. That is, we go from x = A*x + b to (I-A)x = b.
+                        submatrix.convertToEquationSystem();
+                    }
+
+                    // Initialize the x vector with 0.5 for each element.
+                    // This is the initial guess for the iterative solvers. It should be safe as for all
+                    // 'maybe' states we know that the probability is strictly larger than 0.
+                    std::vector<ValueType> x = std::vector<ValueType>(relevantStates.getNumberOfSetBits(), storm::utility::convertNumber<ValueType>(0.5));
+
+                    // Prepare the right-hand side of the equation system.
+                    std::vector<ValueType> b(relevantStates.getNumberOfSetBits(), storm::utility::zero<ValueType>());
+                    // Set initial states
+                    size_t i = 0;
+                    ValueType initDist = storm::utility::one<ValueType>() / storm::utility::convertNumber<ValueType>(initialStates.getNumberOfSetBits());
+                    for (auto const& state : relevantStates) {
+                        if (initialStates.get(state)) {
+                            b[i] = initDist;
+                        }
+                        ++i;
+                    }
+
+                    // Now solve the created system of linear equations.
+                    goal.restrictRelevantValues(relevantStates);
+                    std::unique_ptr<storm::solver::LinearEquationSolver<ValueType>> solver = storm::solver::configureLinearEquationSolver(env, std::move(goal), linearEquationSolverFactory, std::move(submatrix));
+                    solver->setBounds(storm::utility::zero<ValueType>(), storm::utility::one<ValueType>());
+                    solver->solveEquations(env, x, b);
+
+                    // Set values of resulting vector according to result.
+                    storm::utility::vector::setVectorValues<ValueType>(result, relevantStates, x);
+                }
+                return result;
+            }
+
             template<typename ValueType, typename RewardModelType>
             std::vector<ValueType> SparseDtmcPrctlHelper<ValueType, RewardModelType>::computeGloballyProbabilities(Environment const& env, storm::solver::SolveGoal<ValueType>&& goal, storm::storage::SparseMatrix<ValueType> const& transitionMatrix, storm::storage::SparseMatrix<ValueType> const& backwardTransitions, storm::storage::BitVector const& psiStates, bool qualitative) {
                 goal.oneMinus();

@@ -1,5 +1,12 @@
 cmake_minimum_required (VERSION 3.2)
+
 cmake_policy(VERSION 3.2)
+
+# When searching for packages, we would like to first search in prefixes specified by <PackageName>_ROOT.
+# However, this behavior is only supported since CMake 3.12.
+if(POLICY CMP0074)
+	cmake_policy(SET CMP0074 NEW)
+endif()
 
 # Set project name
 project (storm CXX C)
@@ -57,6 +64,7 @@ set(GUROBI_ROOT "" CACHE STRING "A hint to the root directory of Gurobi (optiona
 set(Z3_ROOT "" CACHE STRING "A hint to the root directory of Z3 (optional).")
 set(CUDA_ROOT "" CACHE STRING "The hint to the root directory of CUDA (optional).")
 set(MSAT_ROOT "" CACHE STRING "The hint to the root directory of MathSAT (optional).")
+set(STORM_QVBS_ROOT "" CACHE STRING "The hint to the root directory of the Quantitative Verification Benchmark Set (QVBS) (optional).")
 set(ADDITIONAL_INCLUDE_DIRS "" CACHE STRING "Additional directories added to the include directories.")
 set(ADDITIONAL_LINK_DIRS "" CACHE STRING "Additional directories added to the link directories.")
 set(USE_XERCESC ${XML_SUPPORT})
@@ -182,6 +190,10 @@ elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
 	# using AppleClang
 	if (CMAKE_CXX_COMPILER_VERSION VERSION_LESS 7.3)
 		message(FATAL_ERROR "AppleClang version must be at least 7.3.")
+	elseif ((CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 11.0) OR (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 11.0))
+		message(WARNING "Temporarily disabling stack checks for AppleClang 11.0 or higher.")
+		# TODO: In release mode, stack checks currently fail at runtime. Might be a compiler bug as there does not seem to be faulty behavior. 
+		set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fno-stack-check")
 	endif()
 
 	set(STORM_COMPILER_APPLECLANG ON)
@@ -385,22 +397,8 @@ endif()
 # in the the system does not have a library
 include(resources/3rdparty/CMakeLists.txt)
 
-#############################################################
-##
-##	Doxygen
-##
-#############################################################
-
-find_package(Doxygen)
-# Add a target to generate API documentation with Doxygen
-if(DOXYGEN_FOUND)
-    set(CMAKE_DOXYGEN_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/doc")
-    string(REGEX REPLACE ";" " " CMAKE_DOXYGEN_INPUT_LIST "${PROJECT_SOURCE_DIR}/src")
-
-    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/resources/doxygen/Doxyfile.in" "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile" @ONLY)
-
-    add_custom_target(doc ${DOXYGEN_EXECUTABLE} "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile" DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/Doxyfile" COMMENT "Generating API documentation with Doxygen" VERBATIM)
-endif(DOXYGEN_FOUND)
+# Include Doxygen
+include(resources/doxygen/CMakeLists.txt)
 
 #############################################################
 ##

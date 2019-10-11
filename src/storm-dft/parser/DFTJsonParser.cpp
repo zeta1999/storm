@@ -3,13 +3,15 @@
 #include <iostream>
 #include <fstream>
 #include <boost/algorithm/string.hpp>
-#include <boost/lexical_cast.hpp>
 #include <boost/algorithm/string/replace.hpp>
+#include <boost/lexical_cast.hpp>
+
 #include "storm/exceptions/NotImplementedException.h"
 #include "storm/exceptions/FileIoException.h"
 #include "storm/exceptions/NotSupportedException.h"
 #include "storm/utility/macros.h"
 #include "storm/utility/file.h"
+#include "storm-parsers/parser/ValueParser.h"
 
 namespace storm {
     namespace parser {
@@ -34,26 +36,33 @@ namespace storm {
 
         template<typename ValueType>
         storm::storage::DFT<ValueType> DFTJsonParser<ValueType>::parseJson(json const& jsonInput) {
+            // Init DFT builder and value parser
+            storm::builder::DFTBuilder<ValueType> builder;
+            ValueParser<ValueType> valueParser;
+
             // Try to parse parameters
             if (jsonInput.find("parameters") != jsonInput.end()) {
                 json parameters = jsonInput.at("parameters");
-                STORM_LOG_THROW(parameters.empty() || (std::is_same<ValueType, storm::RationalFunction>::value), storm::exceptions::NotSupportedException, "Parameters only allowed when using rational functions.");
+                STORM_LOG_THROW(parameters.empty() || (std::is_same<ValueType, storm::RationalFunction>::value), storm::exceptions::NotSupportedException,
+                                "Parameters only allowed when using rational functions.");
                 for (auto it = parameters.begin(); it != parameters.end(); ++it) {
                     std::string parameter = it.key();
-                    storm::expressions::Variable var = manager->declareRationalVariable(parameter);
-                    identifierMapping.emplace(var.getName(), var);
-                    parser.setIdentifierMapping(identifierMapping);
-                    STORM_LOG_TRACE("Added parameter: " << var.getName());
+                    valueParser.addParameter(parameter);
+                    STORM_LOG_TRACE("Added parameter: " << parameter);
                 }
             }
 
             json nodes = jsonInput.at("nodes");
             // Start by building mapping from ids to their unique names
             std::map<std::string, std::string> nameMapping;
+            std::set<std::string> names;
             for (auto& element : nodes) {
                 json data = element.at("data");
                 std::string id = data.at("id");
-                nameMapping[id] = generateUniqueName(id, data.at("name"));
+                std::string uniqueName = generateUniqueName(data.at("name"));
+                STORM_LOG_THROW(names.find(uniqueName) == names.end(), storm::exceptions::WrongFormatException, "Element '" << uniqueName << "' was already declared.");
+                names.insert(uniqueName);
+                nameMapping[id] = uniqueName;
             }
 
             // Parse nodes
@@ -61,7 +70,7 @@ namespace storm {
                 STORM_LOG_TRACE("Parsing: " << element);
                 bool success = true;
                 json data = element.at("data");
-                std::string name = generateUniqueName(data.at("id"), data.at("name"));
+                std::string name = generateUniqueName(data.at("name"));
                 std::vector<std::string> childNames;
                 if (data.count("children") > 0) {
                     for (std::string const& child : data.at("children")) {
@@ -72,13 +81,13 @@ namespace storm {
 
                 std::string type = data.at("type");
 
-                if(type == "and") {
+                if (type == "and") {
                     success = builder.addAndElement(name, childNames);
                 } else if (type == "or") {
                     success = builder.addOrElement(name, childNames);
                 } else if (type == "vot") {
                     std::string votThreshold = parseJsonNumber(data.at("voting"));
-                    success = builder.addVotElement(name, boost::lexical_cast<unsigned>(votThreshold), childNames);
+                    success = builder.addVotElement(name, storm::parser::parseNumber<size_t>(votThreshold), childNames);
                 } else if (type == "pand") {
                     success = builder.addPandElement(name, childNames);
                 } else if (type == "por") {
@@ -87,19 +96,35 @@ namespace storm {
                     success = builder.addSpareElement(name, childNames);
                 } else if (type == "seq") {
                     success = builder.addSequenceEnforcer(name, childNames);
-                } else if (type== "fdep") {
+                } else if (type == "mutex") {
+                    success = builder.addMutex(name, childNames);
+                } else if (type == "fdep") {
                     success = builder.addDepElement(name, childNames, storm::utility::one<ValueType>());
-                } else if (type== "pdep") {
-                    ValueType probability = parseRationalExpression(parseJsonNumber(data.at("probability")));
+                } else if (type == "pdep") {
+                    ValueType probability = valueParser.parseValue(parseJsonNumber(data.at("probability")));
                     success = builder.addDepElement(name, childNames, probability);
-                } else if (type == "be") {
-                    ValueType failureRate = parseRationalExpression(parseJsonNumber(data.at("rate")));
-                    ValueType dormancyFactor = parseRationalExpression(parseJsonNumber(data.at("dorm")));
-                    bool transient = false;
-                    if (data.count("transient") > 0) {
-                        transient = data.at("transient");
+                } else if (boost::starts_with(type, "be")) {
+                    std::string distribution = "exp"; // Set default of exponential distribution
+                    if (data.count("distribution") > 0) {
+                        distribution = data.at("distribution");
                     }
-                    success = builder.addBasicElement(name, failureRate, dormancyFactor, transient);
+                    STORM_LOG_THROW(type == "be" || "be_" + distribution == type, storm::exceptions::WrongFormatException,
+                                    "BE type '" << type << "' and distribution '" << distribution << " do not agree.");
+                    if (distribution == "exp") {
+                        ValueType failureRate = valueParser.parseValue(parseJsonNumber(data.at("rate")));
+                        ValueType dormancyFactor = valueParser.parseValue(parseJsonNumber(data.at("dorm")));
+                        bool transient = false;
+                        if (data.count("transient") > 0) {
+                            transient = data.at("transient");
+                        }
+                        success = builder.addBasicElementExponential(name, failureRate, dormancyFactor, transient);
+                    } else if (distribution == "const") {
+                        bool failed = data.at("failed");
+                        success = builder.addBasicElementConst(name, failed);
+                    } else {
+                        STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Distribution: " << distribution << " not supported.");
+                        success = false;
+                    }
                 } else {
                     STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Type name: " << type << "  not recognized.");
                     success = false;
@@ -122,9 +147,10 @@ namespace storm {
             }
 
             std::string topLevelId = parseJsonNumber(jsonInput.at("toplevel"));
-            STORM_LOG_THROW(nameMapping.find(topLevelId) != nameMapping.end(), storm::exceptions::WrongFormatException, "Top level element with id '" << topLevelId << "' was not defined.");
+            STORM_LOG_THROW(nameMapping.find(topLevelId) != nameMapping.end(), storm::exceptions::WrongFormatException,
+                            "Top level element with id '" << topLevelId << "' was not defined.");
             std::string toplevelName = nameMapping.at(topLevelId);
-            if(!builder.setTopLevel(toplevelName)) {
+            if (!builder.setTopLevel(toplevelName)) {
                 STORM_LOG_THROW(false, storm::exceptions::FileIoException, "Top level id unknown.");
             }
 
@@ -137,11 +163,11 @@ namespace storm {
         }
 
         template<typename ValueType>
-        std::string DFTJsonParser<ValueType>::generateUniqueName(std::string const& id, std::string const& name) {
-            std::string newId = name;
-            std::replace(newId.begin(), newId.end(), ' ', '_');
-            std::replace(newId.begin(), newId.end(), '-', '_');
-            return newId + "_" + id;
+        std::string DFTJsonParser<ValueType>::generateUniqueName(std::string const& name) {
+            std::string newName = name;
+            std::replace(newName.begin(), newName.end(), ' ', '_');
+            std::replace(newName.begin(), newName.end(), '-', '_');
+            return newName;
         }
 
         template<typename ValueType>
@@ -154,28 +180,6 @@ namespace storm {
                 return stream.str();
             }
         }
-
-        template<typename ValueType>
-        ValueType DFTJsonParser<ValueType>::parseRationalExpression(std::string const& expr) {
-            STORM_LOG_ASSERT(false, "Specialized method should be called.");
-            return 0;
-        }
-
-        template<>
-        double DFTJsonParser<double>::parseRationalExpression(std::string const& expr) {
-            return boost::lexical_cast<double>(expr);
-        }
-
-        template<>
-        storm::RationalFunction DFTJsonParser<storm::RationalFunction>::parseRationalExpression(std::string const& expr) {
-            STORM_LOG_TRACE("Translating expression: " << expr);
-            storm::expressions::Expression expression = parser.parseFromString(expr);
-            STORM_LOG_TRACE("Expression: " << expression);
-            storm::RationalFunction rationalFunction = evaluator.asRational(expression);
-            STORM_LOG_TRACE("Parsed expression: " << rationalFunction);
-            return rationalFunction;
-        }
-
 
         // Explicitly instantiate the class.
         template class DFTJsonParser<double>;

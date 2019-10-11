@@ -16,6 +16,7 @@
 #include "storm/utility/macros.h"
 #include "storm/utility/constants.h"
 #include "storm/adapters/RationalFunctionAdapter.h"
+#include "storm/adapters/IntelTbbAdapter.h"
 
 // Forward declaration for adapter classes.
 namespace storm {
@@ -725,6 +726,11 @@ namespace storm {
              */
             SparseMatrix filterEntries(storm::storage::BitVector const& rowFilter) const;
             
+            /*!
+             * Removes all zero entries from this.
+             */
+            void dropZeroEntries();
+
             /**
              * Compares two rows.
              * @param i1 Index of first row
@@ -963,6 +969,11 @@ namespace storm {
             template<typename TPrime>
             friend std::ostream& operator<<(std::ostream& out, SparseMatrix<TPrime> const& matrix);
 
+            /*!
+             * Returns a string describing the dimensions of the matrix.
+             */
+            std::string getDimensionsAsString() const;
+            
             /*!
              * Prints the matrix in a dense format, as also used by e.g. Matlab.
              * Notice that the format does not support multiple rows in a rowgroup.

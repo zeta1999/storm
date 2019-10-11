@@ -60,6 +60,7 @@ namespace storm {
              * Performs a forward depth-first search through the underlying graph structure to identify the states that
              * are reachable from the given set only passing through a constrained set of states until some target
              * have been reached.
+             * If an initial state or a (constrained-reachable) target state is not in the constrained set, it will be added to the reachable states but not explored.
              *
              * @param transitionMatrix The transition relation of the graph structure to search.
              * @param initialStates The set of states from which to start the search.
@@ -81,6 +82,15 @@ namespace storm {
             template<typename T>
             storm::storage::BitVector getBsccCover(storm::storage::SparseMatrix<T> const& transitionMatrix);
         
+            
+            /*!
+             * Returns true if the graph represented by the given matrix has a cycle
+             * @param transitionMatrix
+             * @param subsystem if given, only states in the subsystem are considered for the check.
+             */
+            template<typename T>
+            bool hasCycle(storm::storage::SparseMatrix<T> const& transitionMatrix, boost::optional<storm::storage::BitVector> const& subsystem = boost::none);
+            
             /*!
              * Checks whether there is an End Component that
              * 1. contains at least one of the specified choices and

@@ -26,11 +26,10 @@ namespace storm {
              *
              * @param filename File.
              * @param defaultInclusive Flag indicating if priority gates are inclusive by default.
-             * @param binaryDependencies Flag indicating if dependencies should be converted to binary dependencies.
              *
              * @return DFT.
              */
-            static storm::storage::DFT<ValueType> parseDFT(std::string const& filename, bool defaultInclusive = true, bool binaryDependencies = true);
+            static storm::storage::DFT<ValueType> parseDFT(std::string const &filename, bool defaultInclusive = true);
             
         private:
             /*!
@@ -47,12 +46,13 @@ namespace storm {
              *
              * @param name Name of BE.
              * @param input Input line.
+             * @param lineNo Line number.
              * @param builder DFTBuilder.
              * @param valueParser ValueParser.
              *
              * @return True iff the parsing and creation was successful.
              */
-            static bool parseBasicElement(std::string const& name, std::string const& input, storm::builder::DFTBuilder<ValueType>& builder, ValueParser<ValueType>& valueParser);
+            static bool parseBasicElement(std::string const& name, std::string const& input, size_t lineNo, storm::builder::DFTBuilder<ValueType>& builder, ValueParser<ValueType>& valueParser);
 
             /*!
              * Parse argument of basic element of the form "name=value".
@@ -71,9 +71,9 @@ namespace storm {
              * @param name Name of BE.
              * @param input Input line. The parsed argument will be removed from the line.
              *
-             * @return Pair (success, value). Success is true iff the parsing was succesful. Then value contains the parsed value.
+             * @return Pair (success, value). Success is true iff the parsing was successful. Then value contains the parsed value.
              */
-            static std::pair<bool, unsigned> parseNumber(std::string name, std::string& line);
+            static std::pair<bool, size_t> parseNumber(std::string name, std::string& line);
 
             enum Distribution { None, Constant, Exponential, Erlang, Weibull, LogNormal };
         };

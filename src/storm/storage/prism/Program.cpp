@@ -749,7 +749,7 @@ namespace storm {
             this->labels = std::move(newLabels);
         }
         
-        Program Program::restrictCommands(boost::container::flat_set<uint_fast64_t> const& indexSet) const {
+        Program Program::restrictCommands(storm::storage::FlatSet<uint_fast64_t> const& indexSet) const {
             std::vector<storm::prism::Module> newModules;
             newModules.reserve(this->getNumberOfModules());
             
@@ -1447,7 +1447,7 @@ namespace storm {
             std::map<std::string, uint_fast64_t> newActionToIndexMap;
             std::vector<RewardModel> newRewardModels;
             if (!actionIndicesToDelete.empty()) {
-                boost::container::flat_set<uint_fast64_t> actionsToKeep;
+                storm::storage::FlatSet<uint_fast64_t> actionsToKeep;
                 std::set_difference(this->getSynchronizingActionIndices().begin(), this->getSynchronizingActionIndices().end(), actionIndicesToDelete.begin(), actionIndicesToDelete.end(), std::inserter(actionsToKeep, actionsToKeep.begin()));
                 
                 // Insert the silent action as this is not contained in the synchronizing action indices.
@@ -1843,7 +1843,7 @@ namespace storm {
         
         storm::jani::Model Program::toJani(bool allVariablesGlobal, std::string suffix) const {
             ToJaniConverter converter;
-            auto janiModel = converter.convert(*this, allVariablesGlobal, suffix);
+            auto janiModel = converter.convert(*this, allVariablesGlobal, {}, suffix);
             STORM_LOG_WARN_COND(!converter.labelsWereRenamed(), "Labels were renamed in PRISM-to-JANI conversion, but the mapping is not stored.");
             STORM_LOG_WARN_COND(!converter.rewardModelsWereRenamed(), "Rewardmodels were renamed in PRISM-to-JANI conversion, but the mapping is not stored.");
             return janiModel;
@@ -1851,7 +1851,14 @@ namespace storm {
 
         std::pair<storm::jani::Model, std::vector<storm::jani::Property>> Program::toJani(std::vector<storm::jani::Property> const& properties, bool allVariablesGlobal, std::string suffix) const {
             ToJaniConverter converter;
-            auto janiModel = converter.convert(*this, allVariablesGlobal, suffix);
+            std::set<storm::expressions::Variable> variablesToMakeGlobal;
+            if (!allVariablesGlobal) {
+                for (auto const& prop : properties) {
+                    auto vars = prop.getUsedVariablesAndConstants();
+                    variablesToMakeGlobal.insert(vars.begin(), vars.end());
+                }
+            }
+            auto janiModel = converter.convert(*this, allVariablesGlobal, variablesToMakeGlobal, suffix);
             std::vector<storm::jani::Property> newProperties;
             if (converter.labelsWereRenamed() || converter.rewardModelsWereRenamed()) {
                 newProperties = converter.applyRenaming(properties);

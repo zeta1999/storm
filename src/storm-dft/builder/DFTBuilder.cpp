@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "storm/utility/macros.h"
+#include "storm/exceptions/InvalidArgumentException.h"
 #include "storm/exceptions/NotSupportedException.h"
 #include "storm/exceptions/WrongFormatException.h"
 
@@ -26,6 +27,9 @@ namespace storm {
                     if (itFind != mElements.end()) {
                         // Child found
                         DFTElementPointer childElement = itFind->second;
+                        STORM_LOG_THROW(!childElement->isRestriction(), storm::exceptions::WrongFormatException,
+                                        "Restictor " << childElement->name() << " is not allowed as child of gate "
+                                                     << gate->name());
                         if(!childElement->isDependency()) {
                             gate->pushBackChild(childElement);
                             childElement->addParent(gate);
@@ -36,8 +40,8 @@ namespace storm {
                         // Child not found -> find first dependent event to assure that child is dependency
                         // TODO: Not sure whether this is the intended behaviour?
                         auto itFind = mElements.find(child + "_1");
-                        STORM_LOG_ASSERT(itFind != mElements.end(), "Child '" << child << "' for gate '" << gate->name() << "' not found.");
-                        STORM_LOG_ASSERT(itFind->second->isDependency(), "Child is no dependency.");
+                        STORM_LOG_THROW(itFind != mElements.end(), storm::exceptions::WrongFormatException, "Child '" << child << "' for gate '" << gate->name() << "' not found.");
+                        STORM_LOG_THROW(itFind->second->isDependency(), storm::exceptions::WrongFormatException, "Child '" << child << "'is no dependency.");
                         STORM_LOG_TRACE("Ignore functional dependency " << child << " in gate " << gate->name());
                     }
                 }
@@ -47,7 +51,7 @@ namespace storm {
             for(auto& elem : mRestrictionChildNames) {
                 for(auto const& childName : elem.second) {
                     auto itFind = mElements.find(childName);
-                    STORM_LOG_ASSERT(itFind != mElements.end(), "Child not found.");
+                    STORM_LOG_THROW(itFind != mElements.end(), storm::exceptions::WrongFormatException, "Child '" << childName << "' for gate '" << elem.first->name() << "' not found.");
                     DFTElementPointer childElement = itFind->second;
                     STORM_LOG_THROW(childElement->isGate() || childElement->isBasicElement(), storm::exceptions::WrongFormatException, "Child '" << childElement->name() << "' of restriction '" << elem.first->name() << "' must be gate or BE.");
                     elem.first->pushBackChild(childElement);
@@ -61,7 +65,7 @@ namespace storm {
                 std::vector<std::shared_ptr<storm::storage::DFTBE<ValueType>>> dependencies;
                 for(auto const& childName : elem.second) {
                     auto itFind = mElements.find(childName);
-                    STORM_LOG_ASSERT(itFind != mElements.end(), "Child '" << childName << "' not found");
+                    STORM_LOG_THROW(itFind != mElements.end(), storm::exceptions::WrongFormatException, "Child '" << childName << "' for gate '" << elem.first->name() << "' not found.");
                     DFTElementPointer childElement = itFind->second;
                     if (!first) {
                         STORM_LOG_THROW(childElement->isBasicElement(), storm::exceptions::WrongFormatException, "Child '" << childName << "' of dependency '" << elem.first->name() << "' must be BE.");
@@ -73,23 +77,19 @@ namespace storm {
                         childElement->addOutgoingDependency(elem.first);
                     }
                 }
-                if (binaryDependencies) {
-                    STORM_LOG_ASSERT(dependencies.size() == 1, "Dependency '" << elem.first->name() << "' should only have one dependent element.");
-                }
-                elem.first->setDependentEvents(dependencies);
-                for (auto& dependency : dependencies) {
-                    dependency->addIngoingDependency(elem.first);
+                for (auto& be : dependencies) {
+                    elem.first->addDependentEvent(be);
+                    be->addIngoingDependency(elem.first);
                 }
                 
             }
-            
 
             // Sort elements topologically
+            DFTElementVector elems = topoSort();
             // compute rank
-            for (auto& elem : mElements) {
+            for (auto &elem : mElements) {
                 computeRank(elem.second);
             }
-            DFTElementVector elems = topoSort();
             // Set ids
             size_t id = 0;
             for(DFTElementPointer e : elems) {
@@ -138,9 +138,10 @@ namespace storm {
         template<typename ValueType>
         bool DFTBuilder<ValueType>::addRestriction(std::string const& name, std::vector<std::string> const& children, storm::storage::DFTElementType tp) {
             if (children.size() <= 1) {
-                STORM_LOG_ERROR("Sequence enforcers require at least two children");
+                STORM_LOG_ERROR("Restrictions require at least two children");
             }
-            if (mElements.count(name) != 0) {
+            if (nameInUse(name)) {
+                STORM_LOG_ERROR("Element with name '" << name << "' already exists.");
                 return false;
             }
             DFTRestrictionPointer restr;
@@ -149,8 +150,7 @@ namespace storm {
                     restr = std::make_shared<storm::storage::DFTSeq<ValueType>>(mNextId++, name);
                     break;
                 case storm::storage::DFTElementType::MUTEX:
-                    // TODO notice that mutex state generation support is lacking anyway, as DONT CARE propagation would be broken for this.
-                    STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Gate type not supported.");
+                    restr = std::make_shared<storm::storage::DFTMutex<ValueType>>(mNextId++, name);
                     break;
                 default:
                     STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Gate type not known.");
@@ -166,8 +166,8 @@ namespace storm {
         template<typename ValueType>
         bool DFTBuilder<ValueType>::addStandardGate(std::string const& name, std::vector<std::string> const& children, storm::storage::DFTElementType tp) {
             STORM_LOG_ASSERT(children.size() > 0, "No child for " << name);
-            if(mElements.count(name) != 0) {
-                // Element with that name already exists.
+            if (nameInUse(name)) {
+                STORM_LOG_ERROR("Element with name '" << name << "' already exists.");
                 return false;
             }
             DFTElementPointer element;
@@ -187,14 +187,12 @@ namespace storm {
                 case storm::storage::DFTElementType::SPARE:
                    element = std::make_shared<storm::storage::DFTSpare<ValueType>>(mNextId++, name);
                    break;
-                case storm::storage::DFTElementType::BE:
+                case storm::storage::DFTElementType::BE_EXP:
+                case storm::storage::DFTElementType::BE_CONST:
                 case storm::storage::DFTElementType::VOT:
                 case storm::storage::DFTElementType::PDEP:
                     // Handled separately
                     STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Gate type handled separately.");
-                case storm::storage::DFTElementType::CONSTF:
-                case storm::storage::DFTElementType::CONSTS:
-                    STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Gate type not supported.");
                 default:
                     STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Gate type not known.");
             }
@@ -269,17 +267,18 @@ namespace storm {
                     copyGate(std::static_pointer_cast<storm::storage::DFTGate<ValueType>>(element), children);
                     break;
                 }
-                case storm::storage::DFTElementType::BE:
+                case storm::storage::DFTElementType::BE_EXP:
                 {
-                    std::shared_ptr<storm::storage::DFTBE<ValueType>> be = std::static_pointer_cast<storm::storage::DFTBE<ValueType>>(element);
-                    addBasicElement(be->name(), be->activeFailureRate(), be->dormancyFactor(), be->isTransient());
+                    auto beExp = std::static_pointer_cast<storm::storage::BEExponential<ValueType>>(element);
+                    addBasicElementExponential(beExp->name(), beExp->activeFailureRate(), beExp->dormancyFactor(), beExp->isTransient());
                     break;
                 }
-                case storm::storage::DFTElementType::CONSTF:
-                case storm::storage::DFTElementType::CONSTS:
-                    // TODO
-                    STORM_LOG_ASSERT(false, "Const elements not supported.");
+                case storm::storage::DFTElementType::BE_CONST:
+                {
+                    auto beConst = std::static_pointer_cast<storm::storage::BEConst<ValueType>>(element);
+                    addBasicElementConst(beConst->name(), beConst->failed());
                     break;
+                }
                 case storm::storage::DFTElementType::PDEP:
                 {
                     DFTDependencyPointer dependency = std::static_pointer_cast<storm::storage::DFTDependency<ValueType>>(element);
@@ -300,7 +299,7 @@ namespace storm {
                     break;
                 }
                 default:
-                    STORM_LOG_ASSERT(false, "Dft type not known.");
+                    STORM_LOG_THROW(false, storm::exceptions::InvalidArgumentException, "DFT type '" << element->type() << "' not known.");
                     break;
             }
         }

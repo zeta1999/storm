@@ -440,15 +440,8 @@ namespace storm {
             for (auto& functionDefinition : this->getFunctionDefinitions()) {
                 functionDefinition.second.substitute(substitution);
             }
-            for (auto& variable : this->getVariables().getBoundedIntegerVariables()) {
-                variable.substitute(substitution);
-            }
-            for (auto& variable : this->getVariables().getArrayVariables()) {
-                variable.substitute(substitution);
-            }
-            for (auto& variable : this->getVariables().getClockVariables()) {
-                variable.substitute(substitution);
-            }
+            
+            this->getVariables().substitute(substitution);
             
             for (auto& location : this->getLocations()) {
                 location.substitute(substitution);
@@ -572,7 +565,7 @@ namespace storm {
             return result;
         }
 
-        void Automaton::restrictToEdges(boost::container::flat_set<uint_fast64_t> const& edgeIndices) {
+        void Automaton::restrictToEdges(storm::storage::FlatSet<uint_fast64_t> const& edgeIndices) {
             std::vector<Edge> oldEdges = this->edges.getConcreteEdges();
             
             this->edges.clearConcreteEdges();

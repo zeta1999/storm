@@ -11,6 +11,7 @@
 #include "storm/storage/BitVector.h"
 #include "storm/utility/math.h"
 #include "storm/utility/macros.h"
+#include "storm/exceptions/NotSupportedException.h"
 
 #include "storm-dft/storage/dft/DFTElements.h"
 #include "storm-dft/storage/dft/SymmetricUnits.h"
@@ -57,6 +58,7 @@ namespace storm {
             DFTElementVector mElements;
             size_t mNrOfBEs;
             size_t mNrOfSpares;
+            size_t mNrRepresentatives;
             size_t mTopLevelIndex;
             size_t mStateVectorSize;
             size_t mMaxSpareChildCount;
@@ -66,9 +68,12 @@ namespace storm {
             std::map<size_t, size_t> mRepresentants; // id element -> id representative
             std::vector<std::vector<size_t>> mSymmetries;
             std::map<size_t, DFTLayoutInfo> mLayoutInfo;
+            mutable std::vector<size_t> mRelevantEvents;
+            std::vector<bool> mDynamicBehavior;
+            std::map<size_t, bool> mDependencyInConflict;
 
         public:
-            DFT(DFTElementVector const& elements, DFTElementPointer const& tle);
+            DFT(DFTElementVector const &elements, DFTElementPointer const &tle);
             
             DFTStateGenerationInfo buildStateGenerationInfo(storm::storage::DFTIndependentSymmetries const& symmetries) const;
             
@@ -79,6 +84,8 @@ namespace storm {
             DFT<ValueType> optimize() const;
             
             void copyElements(std::vector<size_t> elements, storm::builder::DFTBuilder<ValueType> builder) const;
+
+            void setDynamicBehaviorInfo();
             
             size_t stateBitVectorSize() const {
                 // Ensure multiple of 64
@@ -127,18 +134,46 @@ namespace storm {
                     return mSpareModules.find(representativeId)->second;
                 }
             }
+
+            bool isDependencyInConflict(size_t id) const {
+                STORM_LOG_ASSERT(isDependency(id), "Not a dependency.");
+                return mDependencyInConflict.at(id);
+            }
+
+
+            void setDependencyNotInConflict(size_t id) {
+                STORM_LOG_ASSERT(isDependency(id), "Not a dependency.");
+                mDependencyInConflict.at(id) = false;
+            }
             
             std::vector<size_t> const& getDependencies() const {
                 return mDependencies;
             }
 
+            std::vector<bool> const &getDynamicBehavior() const {
+                return mDynamicBehavior;
+            }
+
             std::vector<size_t> nonColdBEs() const {
                 std::vector<size_t> result;
-                for(DFTElementPointer elem : mElements) {
-                    if(elem->isBasicElement()) {
+                for (DFTElementPointer elem : mElements) {
+                    if (elem->isBasicElement()) {
                         std::shared_ptr<DFTBE<ValueType>> be = std::static_pointer_cast<DFTBE<ValueType>>(elem);
-                        if (be->canFail() && !be->isColdBasicElement()) {
-                            result.push_back(be->id());
+                        if (be->canFail()) {
+                            switch (be->type()) {
+                                case storm::storage::DFTElementType::BE_EXP: {
+                                    auto beExp = std::static_pointer_cast<BEExponential<ValueType>>(be);
+                                    if (!beExp->isColdBasicElement()) {
+                                        result.push_back(be->id());
+                                    }
+                                    break;
+                                }
+                                case storm::storage::DFTElementType::BE_CONST:
+                                    result.push_back(be->id());
+                                    break;
+                                default:
+                                    STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "BE type '" << be->type() << "' is not supported.");
+                            }
                         }
                     }
                 }
@@ -290,6 +325,38 @@ namespace storm {
             }
 
             void writeStatsToStream(std::ostream& stream) const;
+
+            /*!
+             * Get Ids of all elements.
+             * @return All element ids.
+             */
+            std::set<size_t> getAllIds() const;
+
+            /*!
+             * Get id for the given element name.
+             * @param name Name of element.
+             * @return Index of element.
+             */
+            size_t getIndex(std::string const& name) const;
+
+            /*!
+             * Get all relevant events.
+             * @return List of all relevant events.
+             */
+            std::vector<size_t> const& getRelevantEvents() const;
+
+            /*!
+             * Set the relevance flag for all elements according to the given relevant events.
+             * @param relevantEvents All elements which should be to relevant. All elements not occurring are set to irrelevant.
+             * @param allowDCForRelevantEvents Flag whether Don't Care propagation is allowed even for relevant events.
+             */
+            void setRelevantEvents(std::set<size_t> const& relevantEvents, bool allowDCForRelevantEvents) const;
+
+            /*!
+             * Get a string containing the list of all relevant events.
+             * @return String containing all relevant events.
+             */
+            std::string getRelevantEventsString() const;
 
         private:
             std::tuple<std::vector<size_t>, std::vector<size_t>, std::vector<size_t>> getSortedParentAndDependencyIds(size_t index) const;

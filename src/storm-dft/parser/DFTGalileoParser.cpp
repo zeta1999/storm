@@ -32,8 +32,9 @@ namespace storm {
         }
 
         template<typename ValueType>
-        storm::storage::DFT<ValueType> DFTGalileoParser<ValueType>::parseDFT(const std::string& filename, bool defaultInclusive, bool binaryDependencies) {
-            storm::builder::DFTBuilder<ValueType> builder(defaultInclusive, binaryDependencies);
+        storm::storage::DFT<ValueType>
+        DFTGalileoParser<ValueType>::parseDFT(const std::string &filename, bool defaultInclusive) {
+            storm::builder::DFTBuilder<ValueType> builder(defaultInclusive);
             ValueParser<ValueType> valueParser;
             // Regular expression to detect comments
             // taken from: https://stackoverflow.com/questions/9449887/removing-c-c-style-comments-using-boostregex
@@ -101,7 +102,7 @@ namespace storm {
                         std::string name = parseName(tokens[0]);
 
                         std::vector<std::string> childNames;
-                        for(unsigned i = 2; i < tokens.size(); ++i) {
+                        for(size_t i = 2; i < tokens.size(); ++i) {
                             childNames.push_back(parseName(tokens[i]));
                         }
                         bool success = true;
@@ -113,12 +114,12 @@ namespace storm {
                         } else if (type == "or") {
                             success = builder.addOrElement(name, childNames);
                         } else if (boost::starts_with(type, "vot")) {
-                            unsigned threshold = NumberParser<unsigned>::parse(type.substr(3));
+                            size_t threshold = storm::parser::parseNumber<size_t>(type.substr(3));
                             success = builder.addVotElement(name, threshold, childNames);
                         } else if (type.find("of") != std::string::npos) {
                             size_t pos = type.find("of");
-                            unsigned threshold = NumberParser<unsigned>::parse(type.substr(0, pos));
-                            unsigned count = NumberParser<unsigned>::parse(type.substr(pos + 2));
+                            size_t threshold = storm::parser::parseNumber<size_t>(type.substr(0, pos));
+                            size_t count = storm::parser::parseNumber<size_t>(type.substr(pos + 2));
                             STORM_LOG_THROW(count == childNames.size(), storm::exceptions::WrongFormatException, "Voting gate number " << count << " does not correspond to number of children " << childNames.size() << " in line " << lineNo << ".");
                             success = builder.addVotElement(name, threshold, childNames);
                         } else if (type == "pand") {
@@ -137,6 +138,8 @@ namespace storm {
                             success = builder.addSpareElement(name, childNames);
                         } else if (type == "seq") {
                             success = builder.addSequenceEnforcer(name, childNames);
+                        } else if (type == "mutex") {
+                            success = builder.addMutex(name, childNames);
                         } else if (type == "fdep") {
                             STORM_LOG_THROW(childNames.size() >= 2, storm::exceptions::WrongFormatException, "FDEP gate needs at least two children in line " << lineNo << ".");
                             success = builder.addDepElement(name, childNames, storm::utility::one<ValueType>());
@@ -145,7 +148,7 @@ namespace storm {
                             ValueType probability = valueParser.parseValue(type.substr(5));
                             success = builder.addDepElement(name, childNames, probability);
                         } else if (type.find("=") != std::string::npos) {
-                            success = parseBasicElement(name, line, builder, valueParser);
+                            success = parseBasicElement(name, line, lineNo, builder, valueParser);
                         } else if (type.find("insp") != std::string::npos) {
                             // Inspection as defined by DFTCalc
                             STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Inspections (defined in line " << lineNo << ") are not supported.");
@@ -188,7 +191,7 @@ namespace storm {
         }
 
         template<typename ValueType>
-        std::pair<bool, unsigned> DFTGalileoParser<ValueType>::parseNumber(std::string name, std::string& line) {
+        std::pair<bool, size_t> DFTGalileoParser<ValueType>::parseNumber(std::string name, std::string& line) {
             // Build regex for: name=(number)
             std::regex nameRegex(name + "\\s*=\\s*([[:digit:]]+)");
             std::smatch match;
@@ -196,7 +199,7 @@ namespace storm {
                 std::string value = match.str(1);
                 // Remove matched part
                 line = std::regex_replace(line, nameRegex, "");
-                return std::make_pair(true, NumberParser<unsigned>::parse(value));
+                return std::make_pair(true, storm::parser::parseNumber<size_t>(value));
             } else {
                 // No match found
                 return std::make_pair(false, 0);
@@ -204,7 +207,7 @@ namespace storm {
         }
 
         template<typename ValueType>
-        bool DFTGalileoParser<ValueType>::parseBasicElement(std::string const& name, std::string const& input, storm::builder::DFTBuilder<ValueType>& builder, ValueParser<ValueType>& valueParser) {
+        bool DFTGalileoParser<ValueType>::parseBasicElement(std::string const& name, std::string const& input, size_t lineNo, storm::builder::DFTBuilder<ValueType>& builder, ValueParser<ValueType>& valueParser) {
             // Default values
             Distribution distribution = Distribution::None;
             ValueType firstValDistribution = storm::utility::zero<ValueType>();
@@ -220,101 +223,124 @@ namespace storm {
             // Constant distribution
             std::pair<bool, ValueType> result = parseValue("prob", line, valueParser);
             if (result.first) {
-                STORM_LOG_THROW(distribution == Distribution::None, storm::exceptions::WrongFormatException, "A different distribution was already defined for this basic element.");
+                STORM_LOG_THROW(distribution == Distribution::None, storm::exceptions::WrongFormatException, "A different distribution was already defined for basic element '" << name << "' in line " << lineNo << ".");
                 firstValDistribution = result.second;
                 distribution = Distribution::Constant;
             }
             // Exponential distribution
             result = parseValue("lambda", line, valueParser);
             if (result.first) {
-                STORM_LOG_THROW(distribution == Distribution::None || distribution == Distribution::Erlang, storm::exceptions::WrongFormatException, "A different distribution was already defined for this basic element.");
+                STORM_LOG_THROW(distribution == Distribution::None || distribution == Distribution::Erlang, storm::exceptions::WrongFormatException, "A different distribution was already defined for basic element '" << name << "' in line " << lineNo << ".");
                 firstValDistribution = result.second;
                 if (distribution == Distribution::None) {
                     distribution = Distribution::Exponential;
                 }
             }
             // Erlang distribution
-            std::pair<bool, unsigned> resultNum = parseNumber("phases", line);
+            std::pair<bool, size_t> resultNum = parseNumber("phases", line);
             if (resultNum.first) {
-                STORM_LOG_THROW(distribution == Distribution::None || distribution == Distribution::Exponential, storm::exceptions::WrongFormatException, "A different distribution was already defined for this basic element.");
+                STORM_LOG_THROW(distribution == Distribution::None || distribution == Distribution::Exponential, storm::exceptions::WrongFormatException, "A different distribution was already defined for basic element '" << name << "' in line " << lineNo << ".");
                 erlangPhases = resultNum.second;
                 distribution = Distribution::Erlang;
             }
             // Weibull distribution
             result = parseValue("rate", line, valueParser);
             if (result.first) {
-                STORM_LOG_THROW(distribution == Distribution::None || distribution == Distribution::Weibull, storm::exceptions::WrongFormatException, "A different distribution was already defined for this basic element.");
+                STORM_LOG_THROW(distribution == Distribution::None || distribution == Distribution::Weibull, storm::exceptions::WrongFormatException, "A different distribution was already defined for basic element '" << name << "' in line " << lineNo << ".");
                 firstValDistribution = result.second;
                 distribution = Distribution::Weibull;
             }
             result = parseValue("shape", line, valueParser);
             if (result.first) {
-                STORM_LOG_THROW(distribution == Distribution::None || distribution == Distribution::Weibull, storm::exceptions::WrongFormatException, "A different distribution was already defined for this basic element.");
+                STORM_LOG_THROW(distribution == Distribution::None || distribution == Distribution::Weibull, storm::exceptions::WrongFormatException, "A different distribution was already defined for basic element '" << name << "' in line " << lineNo << ".");
                 secondValDistribution = result.second;
                 distribution = Distribution::Weibull;
             }
             // Lognormal distribution
             result = parseValue("mean", line, valueParser);
             if (result.first) {
-                STORM_LOG_THROW(distribution == Distribution::None || distribution == Distribution::LogNormal, storm::exceptions::WrongFormatException, "A different distribution was already defined for this basic element.");
+                STORM_LOG_THROW(distribution == Distribution::None || distribution == Distribution::LogNormal, storm::exceptions::WrongFormatException, "A different distribution was already defined for basic element '" << name << "' in line " << lineNo << ".");
                 firstValDistribution = result.second;
                 distribution = Distribution::LogNormal;
             }
             result = parseValue("stddev", line, valueParser);
             if (result.first) {
-                STORM_LOG_THROW(distribution == Distribution::None || distribution == Distribution::LogNormal, storm::exceptions::WrongFormatException, "A different distribution was already defined for this basic element.");
+                STORM_LOG_THROW(distribution == Distribution::None || distribution == Distribution::LogNormal, storm::exceptions::WrongFormatException, "A different distribution was already defined for basic element '" << name << "' in line " << lineNo << ".");
                 secondValDistribution = result.second;
                 distribution = Distribution::LogNormal;
             }
             // Additional arguments
             result = parseValue("cov", line, valueParser);
             if (result.first) {
-                STORM_LOG_WARN("Coverage is not supported and will be ignored.");
+                STORM_LOG_WARN("Coverage is not supported and will be ignored for basic element '" << name << "' in line " << lineNo << ".");
             }
             result = parseValue("res", line, valueParser);
             if (result.first) {
-                STORM_LOG_WARN("Restoration is not supported and will be ignored.");
+                STORM_LOG_WARN("Restoration is not supported and will be ignored for basic element '" << name << "' in line " << lineNo << ".");
             }
             resultNum = parseNumber("repl", line);
             if (resultNum.first) {
                 replication = resultNum.second;
-                STORM_LOG_THROW(replication == 1, storm::exceptions::NotSupportedException, "Replication > 1 is not supported.");
+                STORM_LOG_THROW(replication == 1, storm::exceptions::NotSupportedException, "Replication > 1 is not supported for basic element '" << name << "' in line " << lineNo << ".");
             }
             result = parseValue("interval", line, valueParser);
             if (result.first) {
-                STORM_LOG_WARN("Interval is not supported and will be ignored.");
+                STORM_LOG_WARN("Interval is not supported and will be ignored for basic element '" << name << "' in line " << lineNo << ".");
             }
             result = parseValue("dorm", line, valueParser);
             if (result.first) {
                 dormancyFactor = result.second;
+            } else {
+                STORM_LOG_WARN("No dormancy factor was provided for basic element '" << name << "' in line " << lineNo << ". Assuming dormancy factor of 1.");
             }
             boost::trim(line);
             if (line != "") {
-                STORM_LOG_THROW(false, storm::exceptions::WrongFormatException, "Unknown arguments: " << line << ".");
+                STORM_LOG_THROW(false, storm::exceptions::WrongFormatException, "Unknown arguments for basic element '" << name << "' in line " << lineNo << ": " << line);
             }
 
             switch (distribution) {
                 case Constant:
-                    STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Constant distribution is not supported.");
+                    if (storm::utility::isZero(firstValDistribution) || storm::utility::isOne(firstValDistribution)) {
+                        return builder.addBasicElementProbability(parseName(name), firstValDistribution, dormancyFactor, false); // TODO set transient BEs
+                    } else {
+                        // Model constant BEs with probability 0 < p < 1
+                        bool success = true;
+                        if (!builder.nameInUse("constantBeTrigger")) {
+                            // Use a unique constantly failed element that triggers failsafe elements probabilistically
+                            success = success && builder.addBasicElementProbability("constantBeTrigger",
+                                                                                    storm::utility::one<ValueType>(),
+                                                                                    storm::utility::one<ValueType>(),
+                                                                                    false);
+                        }
+                        std::vector<std::string> childNames;
+                        childNames.push_back("constantBeTrigger");
+                        success = success &&
+                                  builder.addBasicElementProbability(parseName(name), storm::utility::zero<ValueType>(),
+                                                                     storm::utility::one<ValueType>(), false);
+                        childNames.push_back(parseName(name));
+                        return success &&
+                               builder.addDepElement(parseName(name) + "_pdep", childNames, firstValDistribution);
+                    }
+                    STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Constant distribution is not supported for basic element '" << name << "' in line " << lineNo << ".");
                     break;
                 case Exponential:
-                    return builder.addBasicElement(parseName(name), firstValDistribution, dormancyFactor, false); // TODO set transient BEs
+                    return builder.addBasicElementExponential(parseName(name), firstValDistribution, dormancyFactor, false); // TODO set transient BEs
                     break;
                 case Erlang:
                     if (erlangPhases == 1) {
                         // Erlang distribution reduces to exponential distribution
-                        return builder.addBasicElement(parseName(name), firstValDistribution, dormancyFactor, false); // TODO set transient BEs
+                        return builder.addBasicElementExponential(parseName(name), firstValDistribution, dormancyFactor, false); // TODO set transient BEs
                     } else {
                         // Model Erlang distribution by using SEQ over BEs instead.
                         // For each phase a BE is added, then the SEQ ensures the ordered failure.
-                        STORM_LOG_WARN("Erlang distribution is modelled by SEQ gate and BEs.");
+                        STORM_LOG_WARN("Erlang distribution for basic element '" << name << "' in line " << lineNo << " is modelled by SEQ gate and BEs.");
                         std::string origName = parseName(name);
                         std::vector<std::string> childNames;
-                        bool success = builder.addBasicElement(origName, firstValDistribution, dormancyFactor, false); // TODO set transient BEs
+                        bool success = builder.addBasicElementExponential(origName, firstValDistribution, dormancyFactor, false); // TODO set transient BEs
                         for (size_t i = 0; i < erlangPhases - 1; ++i) {
                             std::string beName = origName + "_" + std::to_string(i);
                             childNames.push_back(beName);
-                            success = success && builder.addBasicElement(beName, firstValDistribution, dormancyFactor, false); // TODO set transient BEs
+                            success = success && builder.addBasicElementExponential(beName, firstValDistribution, dormancyFactor, false); // TODO set transient BEs
                         }
                         childNames.push_back(origName);
                         return success && builder.addSequenceEnforcer(origName + "_seq", childNames);
@@ -323,18 +349,18 @@ namespace storm {
                 case Weibull:
                     if (storm::utility::isOne<ValueType>(secondValDistribution)) {
                         // Weibull distribution reduces to exponential distribution
-                        return builder.addBasicElement(parseName(name), firstValDistribution, dormancyFactor, false); // TODO set transient BEs
+                        return builder.addBasicElementExponential(parseName(name), firstValDistribution, dormancyFactor, false); // TODO set transient BEs
                     } else {
-                        STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Weibull distribution is not supported.");
+                        STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "Weibull distribution is not supported for basic element '" << name << "' in line " << lineNo << ".");
                     }
                     break;
                 case LogNormal:
-                    STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "LogNormal distribution is not supported.");
+                    STORM_LOG_THROW(false, storm::exceptions::NotSupportedException, "LogNormal distribution is not supported for basic element '" << name << "' in line " << lineNo << ".");
                     break;
                 case None:
                     // go-through
                 default:
-                    STORM_LOG_THROW(false, storm::exceptions::WrongFormatException, "No distribution for basic element defined.");
+                    STORM_LOG_THROW(false, storm::exceptions::WrongFormatException, "No distribution defined for basic element '" << name << "' in line " << lineNo << ".");
                     break;
             }
             return false;

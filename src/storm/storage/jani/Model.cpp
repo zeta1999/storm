@@ -622,7 +622,7 @@ namespace storm {
             return actions;
         }
         
-        boost::container::flat_set<uint64_t> const& Model::getNonsilentActionIndices() const {
+        storm::storage::FlatSet<uint64_t> const& Model::getNonsilentActionIndices() const {
             return nonsilentActionIndices;
         }
         
@@ -789,10 +789,19 @@ namespace storm {
             return *expressionManager;
         }
         
+        bool Model::hasNonTrivialRewardExpression() const {
+            return !nonTrivialRewardModels.empty();
+        }
+        
+        bool Model::isNonTrivialRewardModelExpression(std::string const& identifier) const {
+            return nonTrivialRewardModels.count(identifier) > 0;
+        }
+        
         bool Model::addNonTrivialRewardExpression(std::string const& identifier, storm::expressions::Expression const& rewardExpression) {
-            if (nonTrivialRewardModels.count(identifier) > 0) {
+            if (isNonTrivialRewardModelExpression(identifier)) {
                 return false;
             } else {
+                STORM_LOG_THROW(!globalVariables.hasVariable(identifier) || !globalVariables.getVariable(identifier).isTransient(), storm::exceptions::InvalidArgumentException, "Non trivial reward expression with identifier '" << identifier << "' clashes with global transient variable of the same name.");
                 nonTrivialRewardModels.emplace(identifier, rewardExpression);
                 return true;
             }
@@ -1022,6 +1031,9 @@ namespace storm {
             // Gather all defining expressions of constants.
             std::map<storm::expressions::Variable, storm::expressions::Expression> constantSubstitution;
             for (auto& constant : result.getConstants()) {
+                if (constant.hasConstraint()) {
+                    constant.setConstraintExpression(substituteJaniExpression(constant.getConstraintExpression(), constantSubstitution));
+                }
                 if (constant.isDefined()) {
                     constant.define(substituteJaniExpression(constant.getExpression(), constantSubstitution));
                     constantSubstitution[constant.getExpressionVariable()] = constant.getExpression();
@@ -1033,15 +1045,7 @@ namespace storm {
             }
             
             // Substitute constants in all global variables.
-            for (auto& variable : result.getGlobalVariables().getBoundedIntegerVariables()) {
-                variable.substitute(constantSubstitution);
-            }
-            for (auto& variable : result.getGlobalVariables().getArrayVariables()) {
-                variable.substitute(constantSubstitution);
-            }
-            for (auto& variable : result.getGlobalVariables().getClockVariables()) {
-                variable.substitute(constantSubstitution);
-            }
+            result.getGlobalVariables().substitute(constantSubstitution);
             
             // Substitute constants in initial states expression.
             result.setInitialStatesRestriction(substituteJaniExpression(this->getInitialStatesRestriction(), constantSubstitution));
@@ -1079,6 +1083,9 @@ namespace storm {
         void Model::substitute(std::map<storm::expressions::Variable, storm::expressions::Expression> const& substitution) {
             // substitute in all defining expressions of constants
             for (auto& constant : this->getConstants()) {
+                if (constant.hasConstraint()) {
+                    constant.setConstraintExpression(substituteJaniExpression(constant.getConstraintExpression(), substitution));
+                }
                 if (constant.isDefined()) {
                     constant.define(substituteJaniExpression(constant.getExpression(), substitution));
                 }
@@ -1484,14 +1491,14 @@ namespace storm {
             return std::make_pair(index >> 32, index & ((1ull << 32) - 1));
         }
 
-        Model Model::restrictEdges(boost::container::flat_set<uint_fast64_t> const& automataAndEdgeIndices) const {
+        Model Model::restrictEdges(storm::storage::FlatSet<uint_fast64_t> const& automataAndEdgeIndices) const {
             Model result(*this);
 
             // Restrict all automata.
             for (uint64_t automatonIndex = 0; automatonIndex < result.automata.size(); ++automatonIndex) {
                 
                 // Compute the set of edges that is to be kept for this automaton.
-                boost::container::flat_set<uint_fast64_t> automatonEdgeIndices;
+                storm::storage::FlatSet<uint_fast64_t> automatonEdgeIndices;
                 for (auto const& e : automataAndEdgeIndices) {
                     auto automatonAndEdgeIndex = decodeAutomatonAndEdgeIndices(e);
                     if (automatonAndEdgeIndex.first == automatonIndex) {
