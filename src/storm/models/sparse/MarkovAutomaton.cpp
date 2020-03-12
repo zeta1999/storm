@@ -225,7 +225,7 @@ namespace storm {
                     }
                     return std::make_shared<storm::models::sparse::Ctmc<ValueType, RewardModelType>>(std::move(components));
                 }
-                STORM_LOG_TRACE("MA matrix:" << std::endl << this->getTransitionMatrix());
+                //STORM_LOG_TRACE("MA matrix:" << std::endl << this->getTransitionMatrix());
                 STORM_LOG_TRACE("Markovian states: " << getMarkovianStates());
 
                 // Eliminate all probabilistic states by state elimination
@@ -272,8 +272,8 @@ namespace storm {
                 //TODO update reward models and choice labels according to kept states
                 STORM_LOG_WARN_COND(this->getRewardModels().empty(), "Conversion of MA to CTMC does not preserve rewards.");
                 STORM_LOG_WARN_COND(!this->hasChoiceLabeling(), "Conversion of MA to CTMC does not preserve choice labels.");
-                STORM_LOG_WARN_COND(!this->hasStateValuations(), "Conversion of MA to CTMC does not preserve choice labels.");
-                STORM_LOG_WARN_COND(!this->hasChoiceOrigins(), "Conversion of MA to CTMC does not preserve choice labels.");
+                STORM_LOG_WARN_COND(!this->hasStateValuations(), "Conversion of MA to CTMC does not preserve state valuations.");
+                STORM_LOG_WARN_COND(!this->hasChoiceOrigins(), "Conversion of MA to CTMC does not preserve choice origins.");
                 return std::make_shared<storm::models::sparse::Ctmc<ValueType, RewardModelType>>(std::move(rateMatrix), std::move(stateLabeling));
             }
 
@@ -282,9 +282,8 @@ namespace storm {
                 if (isClosed() && markovianStates.empty()) {
                     return true;
                 }
-
-                storm::storage::MaximalEndComponentDecomposition<ValueType> maxEnd(this->getTransitionMatrix(), this->getBackwardTransitions(),~markovianStates);
-                return !maxEnd.empty();
+                storm::storage::BitVector statesWithZenoCycle = storm::utility::graph::performProb0E(*this, this->getBackwardTransitions(), ~markovianStates, markovianStates);
+                return !statesWithZenoCycle.empty();
             }
 
 
